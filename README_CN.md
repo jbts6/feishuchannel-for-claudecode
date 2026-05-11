@@ -24,6 +24,7 @@ npx feishuchannel-for-claudecode   # 一键安装
 - [多群路由配置](#多群路由配置)
 - [访问管理](#访问管理)
 - [文件结构](#文件结构)
+- [多设备同步](#多设备同步)
 - [环境变量](#环境变量)
 - [工作原理](#工作原理)
 - [测试与开发](#测试与开发)
@@ -370,6 +371,71 @@ cat ~/.claude/channels/feishu/router-debug.log | tail -10
 ├── router-debug.log  # Router 调试日志（使用 Router 时）
 └── router.sock       # Worker-Router IPC 的 Unix socket
 ```
+
+---
+
+## 多设备同步
+
+在多台设备上使用同一个飞书机器人（例如：公司电脑 + 家里笔记本），只需复制**两个文件**：
+
+### 需要复制的文件
+
+| 文件 | 内容 | 是否必须同步 |
+|---|---|---|
+| `.env` | 应用凭据（FEISHU_APP_ID, FEISHU_APP_SECRET） | ✅ **必须** — 没有它机器人无法连接 |
+| `access.json` | 访问控制（allowFrom、群组、策略、待审批配对） | ✅ **必须** — 没有它所有用户都显示为未配对 |
+| `approved/` | 临时配对审批信号 | ❌ 不需要 — 自动清理 |
+| `inbox/` | 下载的附件 | ❌ 不需要 — 设备相关 |
+| `debug.log` | 调试日志 | ❌ 不需要 — 自动创建 |
+| `router-debug.log` | Router 调试日志 | ❌ 不需要 — 自动创建 |
+| `router.sock` | Unix socket | ❌ 不需要 — 运行时自动创建 |
+
+### 同步方式
+
+**方式一：手动复制**
+
+```bash
+# 在源设备上
+scp ~/.claude/channels/feishu/.env ~/.claude/channels/feishu/access.json 目标设备:~
+
+# 在目标设备上
+mkdir -p ~/.claude/channels/feishu
+mv ~/.env ~/.claude/channels/feishu/.env
+mv ~/access.json ~/.claude/channels/feishu/access.json
+chmod 600 ~/.claude/channels/feishu/.env
+```
+
+**方式二：软链接到同步文件夹**（如 Dropbox、iCloud、Syncthing）
+
+```bash
+# 创建同步配置文件夹
+mkdir -p ~/Sync/feishu-config
+
+# 将现有配置复制进去
+cp ~/.claude/channels/feishu/.env ~/.claude/channels/feishu/access.json ~/Sync/feishu-config/
+
+# 用软链接替换原文件
+mv ~/.claude/channels/feishu/.env ~/.claude/channels/feishu/.env.bak
+mv ~/.claude/channels/feishu/access.json ~/.claude/channels/feishu/access.json.bak
+ln -s ~/Sync/feishu-config/.env ~/.claude/channels/feishu/.env
+ln -s ~/Sync/feishu-config/access.json ~/.claude/channels/feishu/access.json
+```
+
+**方式三：使用 FEISHU_STATE_DIR 指向同步位置**
+
+```bash
+# 添加到 shell 配置文件（~/.bashrc、~/.zshrc 等）
+export FEISHU_STATE_DIR="$HOME/Sync/feishu-config"
+```
+
+这样整个状态目录都在同步文件夹中——无需软链接。
+
+### 注意事项
+
+- **Channel 模式下同一时间只能有一台设备运行机器人**。同一应用的两个 WebSocket 连接可能导致消息丢失或重复。
+- **Router 模式支持多设备**：每台设备运行自己的 Worker，Router 负责去重。但 Router 本身只应在一台设备上运行。
+- **`access.json` 变更不会自动同步**：在设备 A 上审批配对后，设备 B 在文件同步前不会看到变更。2 秒的访问缓存意味着同步后变更会很快生效。
+- **`access.json` 中的 `workdir` 路径是绝对路径**：`/home/user/project-a` 在另一台设备上可能不存在。请使用一致的路径或按设备调整。
 
 ---
 

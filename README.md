@@ -24,6 +24,7 @@ npx feishuchannel-for-claudecode   # one-command install
 - [Multi-Group Router Setup](#multi-group-router-setup)
 - [Access Management](#access-management)
 - [File Layout](#file-layout)
+- [Multi-Device Sync](#multi-device-sync)
 - [Environment Variables](#environment-variables)
 - [How It Works](#how-it-works)
 - [Testing & Development](#testing--development)
@@ -370,6 +371,71 @@ Groups are off by default. The bot must be added to the group by a group admin f
 ├── router-debug.log  # Router debug log (when using router)
 └── router.sock       # Unix socket for worker-router IPC
 ```
+
+---
+
+## Multi-Device Sync
+
+To use the same Feishu bot on multiple devices (e.g., office desktop + home laptop), you only need to copy **two files**:
+
+### What to Copy
+
+| File | Contains | Must Sync? |
+|---|---|---|
+| `.env` | App credentials (FEISHU_APP_ID, FEISHU_APP_SECRET) | ✅ **Yes** — without this, the bot can't connect |
+| `access.json` | Access control (allowFrom, groups, policies, pending pairings) | ✅ **Yes** — without this, all users appear unpaired |
+| `approved/` | Transient pairing signals | ❌ No — auto-cleaned |
+| `inbox/` | Downloaded attachments | ❌ No — device-specific |
+| `debug.log` | Debug log | ❌ No — auto-created |
+| `router-debug.log` | Router debug log | ❌ No — auto-created |
+| `router.sock` | Unix socket | ❌ No — auto-created at runtime |
+
+### How to Sync
+
+**Option 1: Manual copy**
+
+```bash
+# On the source device
+scp ~/.claude/channels/feishu/.env ~/.claude/channels/feishu/access.json target-device:~
+
+# On the target device
+mkdir -p ~/.claude/channels/feishu
+mv ~/.env ~/.claude/channels/feishu/.env
+mv ~/access.json ~/.claude/channels/feishu/access.json
+chmod 600 ~/.claude/channels/feishu/.env
+```
+
+**Option 2: Symlink to a synced folder** (e.g., Dropbox, iCloud, Syncthing)
+
+```bash
+# Create a synced config folder
+mkdir -p ~/Sync/feishu-config
+
+# Copy existing config into it
+cp ~/.claude/channels/feishu/.env ~/.claude/channels/feishu/access.json ~/Sync/feishu-config/
+
+# Replace original files with symlinks
+mv ~/.claude/channels/feishu/.env ~/.claude/channels/feishu/.env.bak
+mv ~/.claude/channels/feishu/access.json ~/.claude/channels/feishu/access.json.bak
+ln -s ~/Sync/feishu-config/.env ~/.claude/channels/feishu/.env
+ln -s ~/Sync/feishu-config/access.json ~/.claude/channels/feishu/access.json
+```
+
+**Option 3: Use FEISHU_STATE_DIR** to point to a synced location
+
+```bash
+# Add to your shell profile (~/.bashrc, ~/.zshrc, etc.)
+export FEISHU_STATE_DIR="$HOME/Sync/feishu-config"
+```
+
+This makes the entire state directory live in your synced folder — no symlinks needed.
+
+### Important Notes
+
+- **Only one device should run the bot at a time** in Channel mode. Two simultaneous WebSocket connections from the same app may cause message loss or duplication.
+- **Router mode is safe for multi-device**: each device runs its own Worker, and the Router handles deduplication. But only one device should run the Router.
+- **`access.json` changes are not auto-synced**: if you approve a pairing on device A, device B won't see it until the file syncs. The 2-second access cache means changes take effect quickly after sync.
+- **`workdir` paths in `access.json` are absolute**: `/home/user/project-a` on one device may not exist on another. Use consistent paths or adjust per device.
 
 ---
 
