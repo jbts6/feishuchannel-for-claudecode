@@ -10,11 +10,22 @@
   "scripts": {
     "start": "bun install --no-summary && bun server.ts",
     "router": "bun install --no-summary && bun router.ts",
-    "postinstall": "mkdir -p ~/.local/bin && ln -sf \"$(pwd)/bin/claude-feishu\" ~/.local/bin/claude-feishu"
+    "test": "bun test",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run typecheck && bun run lint && bun test",
+    "postinstall": "node -e \"const{mkdirSync,writeFileSync,existsSync}=require('fs');const{join}=require('path');const d=join(require('os').homedir(),'.local','bin');const t=join(d,'claude-feishu');try{mkdirSync(d,{recursive:true});if(!existsSync(t)){writeFileSync(t,process.cwd()+'/bin/claude-feishu')}}catch{}\""
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@larksuiteoapi/node-sdk": "^1.5.0",
     "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.0.0",
+    "typescript": "^5.5.0",
+    "@types/bun": "^1.1.0"
   }
 }

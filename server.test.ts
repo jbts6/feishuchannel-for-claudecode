@@ -1,24 +1,15 @@
 import { describe, test, expect } from 'bun:test'
 
-// ── Pure function extractions for testing ──────────────────────────────────
-// These mirror logic in server.ts / router.ts without importing the full
-// modules (which have side-effects: WebSocket, MCP transport, process exit).
+import {
+  chunkText, checkMention, assertAllowedChat, genConfirmCode,
+  readAccess, defAccess, pruneExpired, parseMessageContent,
+  buildAttachmentInfo, formatTimestamp,
+  PERMISSION_REPLY_RE, CONFIRM_CHARS,
+  type Access, type PendingEntry, type GroupPolicy,
+  AccessCache,
+} from './shared.ts'
 
 // ---------- chunkText ----------
-
-function chunkText(text: string, limit: number): string[] {
-  if (text.length <= limit) return [text]
-  const out: string[] = []; let rest = text
-  while (rest.length > limit) {
-    const para = rest.lastIndexOf('\n\n', limit)
-    const line = rest.lastIndexOf('\n', limit)
-    const space = rest.lastIndexOf(' ', limit)
-    const cut = para > limit / 2 ? para : line > limit / 2 ? line : space > 0 ? space : limit
-    out.push(rest.slice(0, cut)); rest = rest.slice(cut).replace(/^\n+/, '')
-  }
-  if (rest) out.push(rest)
-  return out
-}
 
 describe('chunkText', () => {
   test('short text returns single chunk', () => {
@@ -58,20 +49,7 @@ describe('chunkText', () => {
   })
 })
 
-// ---------- gate logic ----------
-
-type PendingEntry = { senderId: string; chatId: string; createdAt: number; expiresAt: number; replies: number }
-type GroupPolicy = { requireMention: boolean; allowFrom: string[] }
-type Access = {
-  dmPolicy: 'pairing' | 'allowlist' | 'disabled'
-  allowFrom: string[]
-  p2pChats: Record<string, string>
-  groups: Record<string, GroupPolicy>
-  pending: Record<string, PendingEntry>
-  mentionPatterns?: string[]
-  ackReaction?: string
-  textChunkLimit?: number
-}
+// ---------- gate logic (uses shared types) ----------
 
 function gate(a: Access, senderId: string, chatId: string, chatType: string, mentioned: boolean):
   { action: 'deliver' } | { action: 'drop' } | { action: 'pair'; code: string; isResend: boolean } {
@@ -96,7 +74,7 @@ function gate(a: Access, senderId: string, chatId: string, chatType: string, men
 }
 
 function baseAccess(): Access {
-  return { dmPolicy: 'pairing', allowFrom: [], p2pChats: {}, groups: {}, pending: {}, ackReaction: 'Get' }
+  return defAccess()
 }
 
 describe('gate — DM policies', () => {
@@ -181,15 +159,6 @@ describe('gate — group policies', () => {
 
 // ---------- checkMention ----------
 
-function checkMention(mentions: any[], text: string, botId: string | null, extra?: string[]): boolean {
-  for (const m of mentions) {
-    if (m.mentioned_type === 'bot') return true
-    if (botId && m.id?.open_id === botId) return true
-  }
-  for (const p of extra ?? []) { try { if (new RegExp(p, 'i').test(text)) return true } catch {} }
-  return false
-}
-
 describe('checkMention', () => {
   test('bot mention type returns true', () => {
     expect(checkMention([{ mentioned_type: 'bot' }], '', null)).toBe(true)
@@ -217,8 +186,6 @@ describe('checkMention', () => {
 })
 
 // ---------- PERMISSION_REPLY_RE ----------
-
-const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 
 describe('PERMISSION_REPLY_RE', () => {
   test('y + 5-char code matches', () => {
@@ -251,14 +218,6 @@ describe('PERMISSION_REPLY_RE', () => {
 
 // ---------- genConfirmCode ----------
 
-const CONFIRM_CHARS = 'abcdefghijkmnopqrstuvwxyz'
-
-function genConfirmCode(): string {
-  const bytes = new Uint8Array(5)
-  crypto.getRandomValues(bytes)
-  return Array.from(bytes).map(b => CONFIRM_CHARS[b % CONFIRM_CHARS.length]).join('')
-}
-
 describe('genConfirmCode', () => {
   test('generates 5-char code', () => {
     expect(genConfirmCode().length).toBe(5)
@@ -280,14 +239,6 @@ describe('genConfirmCode', () => {
 
 // ---------- assertAllowedChat ----------
 
-function assertAllowedChat(chatId: string, a: Access) {
-  const oid = a.p2pChats[chatId]
-  if (oid !== undefined && a.allowFrom.includes(oid)) return
-  if (a.allowFrom.includes(chatId)) return
-  if (chatId in a.groups) return
-  throw new Error(`chat ${chatId} is not allowlisted`)
-}
-
 describe('assertAllowedChat', () => {
   test('p2p chat with allowed user passes', () => {
     const a = { ...baseAccess(), p2pChats: { oc_chat: 'ou_user' }, allowFrom: ['ou_user'] }
@@ -306,6 +257,113 @@ describe('assertAllowedChat', () => {
   test('p2p chat with removed user throws', () => {
     const a = { ...baseAccess(), p2pChats: { oc_chat: 'ou_user' }, allowFrom: [] }
     expect(() => assertAllowedChat('oc_chat', a)).toThrow('not allowlisted')
+  })
+})
+
+// ---------- parseMessageContent ----------
+
+describe('parseMessageContent', () => {
+  test('plain text message', () => {
+    const result = parseMessageContent('text', JSON.stringify({ text: 'hello world' }))
+    expect(result.text).toBe('hello world')
+    expect(result.postImageKeys).toEqual([])
+  })
+
+  test('post message with text and images', () => {
+    const content = JSON.stringify({
+      title: 'Title',
+      content: [[{ tag: 'text', text: 'hello' }, { tag: 'img', image_key: 'img_key_1' }]],
+    })
+    const result = parseMessageContent('post', content)
+    expect(result.text).toContain('Title')
+    expect(result.text).toContain('hello')
+    expect(result.postImageKeys).toEqual(['img_key_1'])
+  })
+
+  test('post message with link', () => {
+    const content = JSON.stringify({
+      content: [[{ tag: 'a', text: 'click', href: 'https://example.com' }]],
+    })
+    const result = parseMessageContent('post', content)
+    expect(result.text).toContain('click')
+    expect(result.text).toContain('https://example.com')
+  })
+
+  test('post message with @mention', () => {
+    const content = JSON.stringify({
+      content: [[{ tag: 'at', user_name: 'Alice' }]],
+    })
+    const result = parseMessageContent('post', content)
+    expect(result.text).toContain('@Alice')
+  })
+
+  test('invalid JSON falls back to raw content', () => {
+    const result = parseMessageContent('text', 'raw text')
+    expect(result.text).toBe('raw text')
+  })
+})
+
+// ---------- buildAttachmentInfo ----------
+
+describe('buildAttachmentInfo', () => {
+  test('file attachment', () => {
+    const content = JSON.stringify({ file_name: 'doc.pdf', file_key: 'fk_123' })
+    const result = buildAttachmentInfo('file', content, [])
+    expect(result).toHaveLength(1)
+    expect(result[0]).toContain('doc.pdf')
+    expect(result[0]).toContain('fk_123')
+  })
+
+  test('image attachment', () => {
+    const content = JSON.stringify({ image_key: 'ik_456' })
+    const result = buildAttachmentInfo('image', content, [])
+    expect(result).toHaveLength(1)
+    expect(result[0]).toContain('ik_456')
+  })
+
+  test('post image keys', () => {
+    const result = buildAttachmentInfo('post', '{}', ['pk_1', 'pk_2'])
+    expect(result).toHaveLength(2)
+  })
+
+  test('text message has no attachments', () => {
+    const result = buildAttachmentInfo('text', '{}', [])
+    expect(result).toHaveLength(0)
+  })
+})
+
+// ---------- formatTimestamp ----------
+
+describe('formatTimestamp', () => {
+  test('empty string returns current time', () => {
+    const result = formatTimestamp('')
+    expect(result).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+  })
+
+  test('seconds timestamp converts correctly', () => {
+    const result = formatTimestamp('1700000000')
+    expect(result).toBe('2023-11-14T22:13:20.000Z')
+  })
+
+  test('milliseconds timestamp converts correctly', () => {
+    const result = formatTimestamp('1700000000000')
+    expect(result).toBe('2023-11-14T22:13:20.000Z')
+  })
+})
+
+// ---------- pruneExpired ----------
+
+describe('pruneExpired', () => {
+  test('removes expired entries', () => {
+    const a = { ...baseAccess(), pending: { abc: { senderId: 'ou_1', chatId: 'oc_1', createdAt: Date.now() - 7200000, expiresAt: Date.now() - 3600000, replies: 1 } } }
+    expect(pruneExpired(a)).toBe(true)
+    expect(Object.keys(a.pending)).toHaveLength(0)
+  })
+
+  test('keeps valid entries', () => {
+    const a = { ...baseAccess(), pending: { abc: { senderId: 'ou_1', chatId: 'oc_1', createdAt: Date.now(), expiresAt: Date.now() + 3600000, replies: 1 } } }
+    expect(pruneExpired(a)).toBe(false)
+    expect(Object.keys(a.pending)).toHaveLength(1)
   })
 })
 
@@ -352,5 +410,25 @@ describe('resolveWorkdir', () => {
   test('no defaultWorkdir returns undefined', () => {
     const a: RouterAccess = { groups: {} }
     expect(resolveWorkdir(a, 'oc_any', 'p2p')).toBeUndefined()
+  })
+})
+
+// ---------- AccessCache ----------
+
+describe('AccessCache', () => {
+  test('cache returns default access when file missing', () => {
+    const cache = new AccessCache(1000)
+    const noop = () => {}
+    const a = cache.get('/nonexistent/path/access.json', noop)
+    expect(a.dmPolicy).toBe('pairing')
+    expect(a.allowFrom).toEqual([])
+  })
+
+  test('invalidate resets cache', () => {
+    const cache = new AccessCache(1000)
+    const noop = () => {}
+    cache.get('/nonexistent/path/access.json', noop)
+    cache.invalidate()
+    expect((cache as any).cached).toBeNull()
   })
 })

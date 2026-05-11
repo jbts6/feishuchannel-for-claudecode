@@ -9,18 +9,31 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import * as lark from '@larksuiteoapi/node-sdk'
-import { randomBytes } from 'crypto'
 import { execSync, spawn } from 'child_process'
 import { connect as netConnect } from 'net'
 import {
-  readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, rmSync,
-  statSync, renameSync, realpathSync, chmodSync, createReadStream, existsSync,
+  readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync,
+  statSync, chmodSync, createReadStream, existsSync,
 } from 'fs'
-import { homedir } from 'os'
-import { join, sep, extname, basename } from 'path'
+import { join, extname, basename } from 'path'
 
-/** Walk up the process tree to find the Claude ancestor with --channels feishu.
- *  Returns its PID (or 0 if not found). */
+import {
+  STATE_DIR, ACCESS_FILE, ENV_FILE, INBOX_DIR, MAX_CHUNK, MAX_FILE,
+  IMAGE_EXTS, FEISHU_FTYPES, PERMISSION_REPLY_RE, CONFIRM_CHARS,
+  type Access, type PendingEntry, type GroupPolicy,
+  makeDebugger, loadEnv, requireCredentials,
+  defAccess, readAccess, saveAccess, pruneExpired,
+  assertSendable, assertAllowedChat,
+  genConfirmCode, chunkText, checkMention,
+  fetchBotOpenId, fetchParentQuote,
+  parseMessageContent, buildAttachmentInfo, formatTimestamp,
+  AccessCache,
+} from './shared.ts'
+
+const dbg = makeDebugger(join(STATE_DIR, 'debug.log'))
+
+// ── Process tree detection ───────────────────────────────────────────────────
+
 function findChannelAncestorPid(): number {
   try {
     const lines = execSync(
@@ -40,22 +53,19 @@ function findChannelAncestorPid(): number {
       pid = p.ppid
       if (pid <= 1) break
     }
-  } catch {}
+  } catch (e) { dbg(`findChannelAncestorPid failed: ${e}`) }
   return 0
 }
 
-/** Get the cwd of a process by PID (macOS: lsof, Linux: /proc). */
 function getProcessCwd(pid: number): string | undefined {
   try {
-    // macOS
     const out = execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null`, { encoding: 'utf8' })
     const m = out.match(/^n(.+)$/m)
     if (m) return m[1]
-  } catch {}
+  } catch (e) { dbg(`getProcessCwd lsof failed for pid ${pid}: ${e}`) }
   try {
-    // Linux fallback
     return readFileSync(`/proc/${pid}/cwd`, 'utf8')
-  } catch {}
+  } catch (e) { dbg(`getProcessCwd /proc failed for pid ${pid}: ${e}`) }
   return undefined
 }
 
@@ -63,11 +73,13 @@ const CHANNEL_ANCESTOR_PID = findChannelAncestorPid()
 const CHANNEL_MODE = CHANNEL_ANCESTOR_PID > 0
 const CLAUDE_WORKDIR = CHANNEL_MODE ? getProcessCwd(CHANNEL_ANCESTOR_PID) : undefined
 
-const STATE_DIR = process.env.FEISHU_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'feishu')
 const ROUTER_SOCK = join(STATE_DIR, 'router.sock')
-const PLUGIN_DIR = import.meta.dir  // plugin cache directory containing router.ts
+const PLUGIN_DIR = import.meta.dir
+const APPROVED_DIR = join(STATE_DIR, 'approved')
+const DEBUG_LOG = join(STATE_DIR, 'debug.log')
 
-/** Spawn router as detached background process if not already running. */
+// ── Router auto-spawn ────────────────────────────────────────────────────────
+
 function ensureRouter(): boolean {
   if (existsSync(ROUTER_SOCK)) return true
   const routerScript = join(PLUGIN_DIR, 'router.ts')
@@ -83,7 +95,6 @@ function ensureRouter(): boolean {
   return true
 }
 
-/** Wait for router.sock to appear, up to timeoutMs. */
 async function waitForSocket(timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -94,136 +105,45 @@ async function waitForSocket(timeoutMs: number): Promise<boolean> {
 }
 
 let WORKER_MODE = CHANNEL_MODE && existsSync(ROUTER_SOCK)
-const ACCESS_FILE = join(STATE_DIR, 'access.json')
-const APPROVED_DIR = join(STATE_DIR, 'approved')
-const ENV_FILE = join(STATE_DIR, '.env')
-const INBOX_DIR = join(STATE_DIR, 'inbox')
-const DEBUG_LOG = join(STATE_DIR, 'debug.log')
 
-function dbg(msg: string) {
-  const line = `${new Date().toISOString()} ${msg}\n`
-  process.stderr.write(line)
-  try { appendFileSync(DEBUG_LOG, line) } catch {}
-}
+// ── Env & credentials ────────────────────────────────────────────────────────
 
-// Load .env — real env wins. Plugin-spawned servers don't get an env block.
-try {
-  chmodSync(ENV_FILE, 0o600)
-  for (const line of readFileSync(ENV_FILE, 'utf8').split('\n')) {
-    const m = line.match(/^(\w+)=(.*)$/)
-    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2]
-  }
-} catch {}
-
-const APP_ID = process.env.FEISHU_APP_ID
-const APP_SECRET = process.env.FEISHU_APP_SECRET
-const ENCRYPT_KEY = process.env.FEISHU_ENCRYPT_KEY ?? ''
+loadEnv(ENV_FILE)
+const { appId: APP_ID, appSecret: APP_SECRET, encryptKey: ENCRYPT_KEY } = requireCredentials()
 const STATIC = process.env.FEISHU_ACCESS_MODE === 'static'
 
-if (!APP_ID || !APP_SECRET) {
-  process.stderr.write(
-    `feishu channel: FEISHU_APP_ID and FEISHU_APP_SECRET required\n` +
-    `  set in ${ENV_FILE}\n  format: FEISHU_APP_ID=cli_...  FEISHU_APP_SECRET=...\n`,
-  )
-  process.exit(1)
-}
+process.on('unhandledRejection', err => {
+  process.stderr.write(`feishu channel: unhandled rejection: ${err}\n`)
+  dbg(`unhandled rejection: ${err}`)
+})
+process.on('uncaughtException', err => {
+  process.stderr.write(`feishu channel: uncaught exception: ${err}\n`)
+  dbg(`uncaught exception: ${err}`)
+})
 
-process.on('unhandledRejection', err => process.stderr.write(`feishu channel: unhandled rejection: ${err}\n`))
-process.on('uncaughtException', err => process.stderr.write(`feishu channel: uncaught exception: ${err}\n`))
+// ── Access control ───────────────────────────────────────────────────────────
 
-// Permission reply: "y xxxxx" or "n xxxxx" — 5 chars a-z minus 'l'.
-const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
-const CONFIRM_CHARS = 'abcdefghijkmnopqrstuvwxyz'
-function genConfirmCode(): string {
-  const bytes = randomBytes(5)
-  return Array.from(bytes).map(b => CONFIRM_CHARS[b % CONFIRM_CHARS.length]).join('')
-}
-
-const apiClient = new lark.Client({ appId: APP_ID, appSecret: APP_SECRET, loggerLevel: lark.LoggerLevel.warn })
-let botOpenId: string | null = null
-async function fetchBotOpenId() {
-  try {
-    const r = await (apiClient as any).bot.botInfo.get()
-    botOpenId = r?.bot?.open_id ?? r?.data?.bot?.open_id ?? null
-    if (botOpenId) process.stderr.write(`feishu channel: bot open_id = ${botOpenId}\n`)
-  } catch (e) { process.stderr.write(`feishu channel: could not fetch bot open_id: ${e}\n`) }
-}
-
-// Access control types
-type PendingEntry = { senderId: string; chatId: string; createdAt: number; expiresAt: number; replies: number }
-type GroupPolicy = { requireMention: boolean; allowFrom: string[] }
-type Access = {
-  dmPolicy: 'pairing' | 'allowlist' | 'disabled'
-  allowFrom: string[]        // open_ids of allowed users
-  p2pChats: Record<string, string>    // chatId → openId, built on pairing
-  groups: Record<string, GroupPolicy> // group chatId → policy
-  pending: Record<string, PendingEntry>
-  mentionPatterns?: string[]
-  ackReaction?: string       // Feishu emoji_type code, e.g. "Get"
-  textChunkLimit?: number
-}
-const MAX_CHUNK = 4096
-const MAX_FILE = 30 * 1024 * 1024
-const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'])
-const FEISHU_FTYPES: Record<string, string> = { '.pdf': 'pdf', '.doc': 'doc', '.docx': 'doc', '.xls': 'xls', '.xlsx': 'xls', '.ppt': 'ppt', '.pptx': 'ppt', '.mp4': 'mp4', '.opus': 'opus' }
-
-function defAccess(): Access { return { dmPolicy: 'pairing', allowFrom: [], p2pChats: {}, groups: {}, pending: {}, ackReaction: 'Get' } }
-
-function readAccess(): Access {
-  try {
-    const p = JSON.parse(readFileSync(ACCESS_FILE, 'utf8')) as Partial<Access>
-    return { dmPolicy: p.dmPolicy ?? 'pairing', allowFrom: p.allowFrom ?? [], p2pChats: p.p2pChats ?? {}, groups: p.groups ?? {}, pending: p.pending ?? {}, mentionPatterns: p.mentionPatterns, ackReaction: p.ackReaction ?? 'Get', textChunkLimit: p.textChunkLimit }
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return defAccess()
-    try { renameSync(ACCESS_FILE, `${ACCESS_FILE}.corrupt-${Date.now()}`) } catch {}
-    process.stderr.write('feishu: access.json corrupt, starting fresh\n')
-    return defAccess()
-  }
-}
+const accessCache = new AccessCache(2000)
 
 const BOOT = STATIC ? (() => {
-  const a = readAccess()
+  const a = readAccess(ACCESS_FILE, dbg)
   if (a.dmPolicy === 'pairing') { process.stderr.write('feishu: static mode — pairing downgraded to allowlist\n'); a.dmPolicy = 'allowlist' }
   a.pending = {}
   return a
 })() : null
 
-const loadAccess = () => BOOT ?? readAccess()
+const loadAccess = () => BOOT ?? accessCache.get(ACCESS_FILE, dbg)
 
-function saveAccess(a: Access) {
-  if (STATIC) return
-  mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
-  const tmp = ACCESS_FILE + '.tmp'
-  writeFileSync(tmp, JSON.stringify(a, null, 2) + '\n', { mode: 0o600 })
-  renameSync(tmp, ACCESS_FILE)
-}
-
-function pruneExpired(a: Access): boolean {
-  const now = Date.now(); let changed = false
-  for (const [k, p] of Object.entries(a.pending)) if (p.expiresAt < now) { delete a.pending[k]; changed = true }
-  return changed
-}
-
-function assertSendable(f: string) {
-  try {
-    const real = realpathSync(f), sr = realpathSync(STATE_DIR), inbox = join(sr, 'inbox')
-    if (real.startsWith(sr + sep) && !real.startsWith(inbox + sep)) throw new Error(`refusing to send channel state: ${f}`)
-  } catch (e) { if ((e as any).message?.startsWith('refusing')) throw e }
-}
-
-function assertAllowedChat(chatId: string, a: Access) {
-  const oid = a.p2pChats[chatId]
-  if (oid !== undefined && a.allowFrom.includes(oid)) return
-  if (a.allowFrom.includes(chatId)) return
-  if (chatId in a.groups) return
-  throw new Error(`chat ${chatId} is not allowlisted — add via /feishu:access`)
+function saveAccessCached(a: Access) {
+  saveAccess(a, ACCESS_FILE, STATE_DIR, STATIC)
+  accessCache.invalidate()
 }
 
 type GateResult = { action: 'deliver'; access: Access } | { action: 'drop' } | { action: 'pair'; code: string; isResend: boolean }
 
 function gate(senderId: string, chatId: string, chatType: string, mentioned: boolean): GateResult {
   const a = loadAccess()
-  if (pruneExpired(a)) saveAccess(a)
+  if (pruneExpired(a)) saveAccessCached(a)
   if (a.dmPolicy === 'disabled') return { action: 'drop' }
 
   if (chatType === 'p2p') {
@@ -232,15 +152,15 @@ function gate(senderId: string, chatId: string, chatType: string, mentioned: boo
     for (const [code, p] of Object.entries(a.pending)) {
       if (p.senderId === senderId) {
         if ((p.replies ?? 1) >= 2) return { action: 'drop' }
-        p.replies = (p.replies ?? 1) + 1; saveAccess(a)
+        p.replies = (p.replies ?? 1) + 1; saveAccessCached(a)
         return { action: 'pair', code, isResend: true }
       }
     }
     if (Object.keys(a.pending).length >= 3) return { action: 'drop' }
-    const code = randomBytes(3).toString('hex')
+    const code = genConfirmCode().slice(0, 6)
     const now = Date.now()
     a.pending[code] = { senderId, chatId, createdAt: now, expiresAt: now + 3600000, replies: 1 }
-    saveAccess(a)
+    saveAccessCached(a)
     return { action: 'pair', code, isResend: false }
   }
 
@@ -251,63 +171,29 @@ function gate(senderId: string, chatId: string, chatType: string, mentioned: boo
   return { action: 'deliver', access: a }
 }
 
-/** Fetch the parent message's text so replies keep context when delivered. */
-async function fetchParentQuote(parentId: string): Promise<string> {
-  try {
-    const r = await (apiClient as any).im.message.get({ path: { message_id: parentId } })
-    const items: any[] = r?.items ?? r?.data?.items ?? []
-    if (!items.length) return ''
-    const m = items[0]
-    const raw: string = m.body?.content ?? m.content ?? ''
-    let txt = raw
-    try { txt = JSON.parse(raw).text ?? raw } catch {}
-    const mtype: string = m.msg_type ?? m.message_type ?? ''
-    const who: string = m.sender?.id ?? m.sender?.sender_id ?? ''
-    const preview = (txt || `[${mtype}]`).replace(/\s+/g, ' ').trim().slice(0, 500)
-    return `> [replying to ${who}]: ${preview}\n\n`
-  } catch (e) { dbg(`fetchParentQuote failed: ${e}`); return '' }
-}
-
-function checkMention(mentions: any[], text: string, extra?: string[]): boolean {
-  for (const m of mentions) {
-    if (m.mentioned_type === 'bot') return true
-    if (botOpenId && m.id?.open_id === botOpenId) return true
-  }
-  for (const p of extra ?? []) { try { if (new RegExp(p, 'i').test(text)) return true } catch {} }
-  return false
-}
+// ── Approval polling ─────────────────────────────────────────────────────────
 
 function checkApprovals() {
   let files: string[]
-  try { files = readdirSync(APPROVED_DIR) } catch { return }
+  try { files = readdirSync(APPROVED_DIR) } catch (e) { dbg(`checkApprovals readdir failed: ${e}`); return }
   for (const openId of files) {
     const file = join(APPROVED_DIR, openId)
     let chatId: string
-    try { chatId = readFileSync(file, 'utf8').trim() } catch { rmSync(file, { force: true }); continue }
+    try { chatId = readFileSync(file, 'utf8').trim() } catch (e) { dbg(`checkApprovals read failed for ${openId}: ${e}`); rmSync(file, { force: true }); continue }
     if (!chatId) { rmSync(file, { force: true }); continue }
     void (async () => {
       try {
         const a = loadAccess()
-        if (!a.p2pChats[chatId]) { a.p2pChats[chatId] = openId; saveAccess(a) }
+        if (!a.p2pChats[chatId]) { a.p2pChats[chatId] = openId; saveAccessCached(a) }
         await apiClient.im.message.create({ params: { receive_id_type: 'chat_id' }, data: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text: 'Paired! Say hi to Claude.' }) } })
         rmSync(file, { force: true })
-      } catch (e) { process.stderr.write(`feishu: approval confirm failed: ${e}\n`); rmSync(file, { force: true }) }
+      } catch (e) { process.stderr.write(`feishu: approval confirm failed: ${e}\n`); dbg(`approval confirm failed: ${e}`); rmSync(file, { force: true }) }
     })()
   }
 }
 if (!STATIC && CHANNEL_MODE) setInterval(checkApprovals, 5000).unref()
 
-function chunkText(text: string, limit: number): string[] {
-  if (text.length <= limit) return [text]
-  const out: string[] = []; let rest = text
-  while (rest.length > limit) {
-    const para = rest.lastIndexOf('\n\n', limit), line = rest.lastIndexOf('\n', limit), space = rest.lastIndexOf(' ', limit)
-    const cut = para > limit / 2 ? para : line > limit / 2 ? line : space > 0 ? space : limit
-    out.push(rest.slice(0, cut)); rest = rest.slice(cut).replace(/^\n+/, '')
-  }
-  if (rest) out.push(rest)
-  return out
-}
+// ── File download ────────────────────────────────────────────────────────────
 
 async function downloadResource(messageId: string, fileKey: string, type: 'file' | 'image', fileName: string): Promise<string> {
   const ext = type === 'image' ? '.png' : extname(fileName) || '.bin'
@@ -330,6 +216,11 @@ async function downloadResource(messageId: string, fileKey: string, type: 'file'
   return outPath
 }
 
+// ── MCP Server ───────────────────────────────────────────────────────────────
+
+const apiClient = new lark.Client({ appId: APP_ID, appSecret: APP_SECRET, loggerLevel: lark.LoggerLevel.warn })
+let botOpenId: string | null = null
+
 const mcp = new Server(
   { name: 'feishu', version: '1.0.0' },
   {
@@ -348,6 +239,8 @@ const mcp = new Server(
 
 const pendingPerms = new Map<string, { tool_name: string; description: string; input_preview: string }>()
 const pendingConfirms = new Map<string, { chatId: string; senderId: string; title: string; content: string }>()
+
+// ── Card builders ────────────────────────────────────────────────────────────
 
 function buildPermCard(tool_name: string, description: string, request_id: string): string {
   return JSON.stringify({
@@ -449,9 +342,9 @@ function buildConfirmCard(title: string, content: string, code: string): string 
   })
 }
 
-// ── Unanswered message reminders ────────────────────────────────────────────
+// ── Unanswered message reminders ─────────────────────────────────────────────
 
-const REMINDER_DELAYS_MS = [30 * 60_000, 60 * 60_000, 120 * 60_000]  // 30m, 1h, 2h
+const REMINDER_DELAYS_MS = [30 * 60_000, 60 * 60_000, 120 * 60_000]
 
 type PendingReply = {
   chatId: string
@@ -509,6 +402,8 @@ function clearReminder(chatId: string) {
   pendingReplies.delete(chatId)
 }
 
+// ── Permission request handler ───────────────────────────────────────────────
+
 mcp.setNotificationHandler(
   z.object({
     method: z.literal('notifications/claude/channel/permission_request'),
@@ -529,11 +424,13 @@ mcp.setNotificationHandler(
             ? { params: { receive_id_type: 'chat_id' as const }, data: { receive_id: chatId, msg_type: 'interactive', content: card } }
             : { params: { receive_id_type: 'open_id' as const }, data: { receive_id: openId, msg_type: 'interactive', content: card } }
           await (apiClient as any).im.message.create(params2)
-        } catch (e) { process.stderr.write(`feishu: perm send to ${openId} failed: ${e}\n`) }
+        } catch (e) { process.stderr.write(`feishu: perm send to ${openId} failed: ${e}\n`); dbg(`perm send to ${openId} failed: ${e}`) }
       })()
     }
   },
 )
+
+// ── Tool definitions ─────────────────────────────────────────────────────────
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [
   { name: 'reply', description: 'Send a message to a Feishu chat. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) to quote-reply, and files (absolute paths) to attach.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, text: { type: 'string' }, reply_to: { type: 'string', description: 'Message ID to quote-reply.' }, files: { type: 'array', items: { type: 'string' }, description: 'Absolute paths. Images (.png/.jpg etc) sent as image messages; others as file messages.' } }, required: ['chat_id', 'text'] } },
@@ -543,6 +440,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [
   { name: 'fetch_messages', description: 'Fetch recent messages from a Feishu chat. Returns oldest-first with message IDs.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, limit: { type: 'number', description: 'Max messages (default 20, max 50).' } }, required: ['chat_id'] } },
   { name: 'send_confirm_card', description: 'Send an interactive card with ✅ Confirm and ❌ Cancel buttons to ask the user before taking a risky or irreversible action. When the user responds, a "CONFIRMED <code>" or "CANCELLED <code>" message arrives in this session. Wait for it before proceeding.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, content: { type: 'string', description: 'Action description shown in the card (supports lark_md markdown).' }, title: { type: 'string', description: 'Card title. Default: "⚡ 操作确认"' } }, required: ['chat_id', 'content'] } },
 ] }))
+
+// ── Tool handler ─────────────────────────────────────────────────────────────
 
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
   const a = (req.params.arguments ?? {}) as Record<string, unknown>
@@ -554,7 +453,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const files = (a.files as string[] | undefined) ?? []
         const access = loadAccess()
         assertAllowedChat(chatId, access)
-        for (const f of files) { assertSendable(f); if (statSync(f).size > MAX_FILE) throw new Error(`file too large: ${f}`) }
+        for (const f of files) { assertSendable(f, STATE_DIR); if (statSync(f).size > MAX_FILE) throw new Error(`file too large: ${f}`) }
         const limit = Math.min(access.textChunkLimit ?? MAX_CHUNK, MAX_CHUNK)
         const chunks = chunkText(text, limit)
         const ids: string[] = []
@@ -603,7 +502,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const msg = items[0]
         const msgType: string = msg.msg_type ?? msg.message_type ?? ''
         let cnt: Record<string, string> = {}
-        try { cnt = JSON.parse(msg.body?.content ?? msg.content ?? '{}') } catch {}
+        try { cnt = JSON.parse(msg.body?.content ?? msg.content ?? '{}') } catch (e) { dbg(`download_attachment: failed to parse message content: ${e}`) }
         if (msgType === 'image') {
           if (!cnt.image_key) return { content: [{ type: 'text', text: 'no image_key found' }] }
           const p = await downloadResource(msgId, cnt.image_key, 'image', 'image.png')
@@ -665,6 +564,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   }
 })
 
+// ── Card action handler ──────────────────────────────────────────────────────
+
 async function handleCardAction(data: any): Promise<Record<string, unknown>> {
   dbg(`handleCardAction: ${JSON.stringify(data).slice(0, 500)}`)
   const value = data?.action?.value ?? {}
@@ -672,7 +573,6 @@ async function handleCardAction(data: any): Promise<Record<string, unknown>> {
   const action = value.action as string | undefined
   if (!code || !action) return {}
 
-  // Handle permission card buttons
   if (action === 'perm_allow' || action === 'perm_deny') {
     const behavior = action === 'perm_deny' ? 'deny' : 'allow'
     void mcp.notification({ method: 'notifications/claude/channel/permission', params: { request_id: code, behavior } })
@@ -702,7 +602,6 @@ async function handleCardAction(data: any): Promise<Record<string, unknown>> {
     }
   }
 
-  // Handle confirm card buttons
   const pending = pendingConfirms.get(code)
   if (!pending) return {}
   pendingConfirms.delete(code)
@@ -745,6 +644,8 @@ async function handleCardAction(data: any): Promise<Record<string, unknown>> {
   }
 }
 
+// ── Inbound message handler ──────────────────────────────────────────────────
+
 async function handleInbound(data: any) {
   const ev = data.event ?? data
   const sender = ev.sender, message = ev.message
@@ -760,33 +661,11 @@ async function handleInbound(data: any) {
   const createTime: string = message.create_time ?? ''
   if (!senderId || !chatId || !messageId) { dbg(`drop: missing ids senderId=${senderId} chatId=${chatId} messageId=${messageId}`); return }
 
-  let text = ''
-  const postImageKeys: string[] = []
-  try {
-    const parsed = JSON.parse(contentStr)
-    if (msgType === 'post') {
-      // Post messages nest text+images in a 2D array: {title, content: [[{tag,text|image_key}]]}
-      if (parsed.title) text += parsed.title
-      const rows: any[] = Array.isArray(parsed.content) ? parsed.content : []
-      for (const row of rows) {
-        if (!Array.isArray(row)) continue
-        const parts: string[] = []
-        for (const seg of row) {
-          if (seg?.tag === 'text' && seg.text) parts.push(seg.text)
-          else if (seg?.tag === 'a' && seg.text) parts.push(`${seg.text}(${seg.href ?? ''})`)
-          else if (seg?.tag === 'at' && (seg.user_name ?? seg.user_id)) parts.push(`@${seg.user_name ?? seg.user_id}`)
-          else if (seg?.tag === 'img' && seg.image_key) postImageKeys.push(seg.image_key)
-        }
-        if (parts.length) text += (text ? '\n' : '') + parts.join(' ')
-      }
-    } else {
-      text = parsed.text ?? ''
-    }
-  } catch { text = contentStr }
+  const { text, postImageKeys } = parseMessageContent(msgType, contentStr)
 
   const access = loadAccess()
   if (mentions.length > 0) dbg(`mentions: ${JSON.stringify(mentions)}, botOpenId=${botOpenId}`)
-  const mentioned = checkMention(mentions, text, access.mentionPatterns)
+  const mentioned = checkMention(mentions, text, botOpenId, access.mentionPatterns)
   const result = gate(senderId, chatId, chatType, mentioned)
   dbg(`gate result: ${result.action}, senderId=${senderId}, chatId=${chatId}, chatType=${chatType}, mentioned=${mentioned}`)
   if (result.action === 'drop') return
@@ -795,11 +674,10 @@ async function handleInbound(data: any) {
     const lead = result.isResend ? 'Still pending' : 'Pairing required'
     try {
       await (apiClient as any).im.message.reply({ path: { message_id: messageId }, data: { msg_type: 'text', content: JSON.stringify({ text: `${lead} — run in Claude Code:\n\n/feishu:access pair ${result.code}` }), reply_in_thread: false } })
-    } catch (e) { process.stderr.write(`feishu: pairing reply failed: ${e}\n`) }
+    } catch (e) { process.stderr.write(`feishu: pairing reply failed: ${e}\n`); dbg(`pairing reply failed: ${e}`) }
     return
   }
 
-  // Permission / confirm reply intercept
   const pm = PERMISSION_REPLY_RE.exec(text)
   if (pm) {
     const code = pm[2]!.toLowerCase()
@@ -820,17 +698,13 @@ async function handleInbound(data: any) {
     return
   }
 
-  if (result.access.ackReaction) void (apiClient as any).im.messageReaction.create({ path: { message_id: messageId }, data: { reaction_type: { emoji_type: result.access.ackReaction } } }).catch(() => {})
+  if (result.access.ackReaction) void (apiClient as any).im.messageReaction.create({ path: { message_id: messageId }, data: { reaction_type: { emoji_type: result.access.ackReaction } } }).catch((e: unknown) => dbg(`ack reaction failed: ${e}`))
 
-  const atts: string[] = []
-  if (msgType === 'file') { try { const c = JSON.parse(contentStr); atts.push(`${c.file_name ?? 'file'} (file, key:${c.file_key ?? ''})`) } catch {} }
-  else if (msgType === 'image') { try { const c = JSON.parse(contentStr); atts.push(`image (image/jpeg, key:${c.image_key ?? ''})`) } catch {} }
-  for (const k of postImageKeys) atts.push(`image (image/jpeg, key:${k})`)
-
-  const ts = createTime ? new Date(parseInt(createTime) > 1e12 ? parseInt(createTime) : parseInt(createTime) * 1000).toISOString() : new Date().toISOString()
+  const atts = buildAttachmentInfo(msgType, contentStr, postImageKeys)
+  const ts = formatTimestamp(createTime)
 
   const parentId: string = (message as any).parent_id ?? ''
-  const quotePrefix = parentId ? await fetchParentQuote(parentId) : ''
+  const quotePrefix = parentId ? await fetchParentQuote(apiClient, parentId, dbg) : ''
   const body = text || (atts.length ? '(attachment)' : '')
   const content = quotePrefix + body
   dbg(`content="${content}" text="${text}" atts=${atts.length} parent=${parentId || '-'}`)
@@ -844,11 +718,7 @@ async function handleInbound(data: any) {
   trackUnanswered(chatId, senderId, chatType, content)
 }
 
-// ── Rate-limit detection via transcript tail ────────────────────────────────
-// Claude Code writes every event to ~/.claude/projects/<dashed-cwd>/<session>.jsonl.
-// When the 5-hour quota is hit, a synthetic assistant message lands with
-// error:"rate_limit" + isApiErrorMessage:true. We tail that file and notify
-// the user via Feishu so the session isn't silently stuck.
+// ── Rate-limit detection via transcript tail ──────────────────────────────────
 
 const TRANSCRIPT_POLL_MS = 2_000
 const notifiedRateLimitUuids = new Set<string>()
@@ -857,22 +727,23 @@ let transcriptOffset = 0
 let transcriptBuf = ''
 
 function projectDirForCwd(cwd: string): string {
-  return join(homedir(), '.claude', 'projects', cwd.replace(/\//g, '-'))
+  return join(require('os').homedir(), '.claude', 'projects', cwd.replace(/\//g, '-'))
 }
 
 function findLatestTranscript(projectDir: string): string | null {
   try {
-    const files = readdirSync(projectDir)
-      .filter(f => f.endsWith('.jsonl'))
-      .map(f => {
+    const { readdirSync: rd, statSync: st } = require('fs')
+    const files = rd(projectDir)
+      .filter((f: string) => f.endsWith('.jsonl'))
+      .map((f: string) => {
         const p = join(projectDir, f)
-        try { return { p, mtime: statSync(p).mtimeMs } } catch { return null }
+        try { return { p, mtime: st(p).mtimeMs } } catch (e) { dbg(`findLatestTranscript stat failed for ${f}: ${e}`); return null }
       })
-      .filter((x): x is { p: string; mtime: number } => x !== null)
+      .filter((x: any): x is { p: string; mtime: number } => x !== null)
     if (!files.length) return null
-    files.sort((a, b) => b.mtime - a.mtime)
+    files.sort((a: any, b: any) => b.mtime - a.mtime)
     return files[0].p
-  } catch { return null }
+  } catch (e) { dbg(`findLatestTranscript failed: ${e}`); return null }
 }
 
 async function sendRateLimitNotice(text: string) {
@@ -882,7 +753,7 @@ async function sendRateLimitNotice(text: string) {
     try {
       const a = loadAccess()
       for (const cid of Object.keys(a.p2pChats)) chats.add(cid)
-    } catch {}
+    } catch (e) { dbg(`sendRateLimitNotice: failed to load access for chat list: ${e}`) }
   }
   dbg(`rate_limit detected, notifying ${chats.size} chat(s)`)
   for (const chatId of chats) {
@@ -920,8 +791,7 @@ async function pollTranscript() {
     if (!latest) return
     if (latest !== transcriptPath) {
       transcriptPath = latest
-      // Start at EOF so we don't replay historical rate-limit events on startup.
-      try { transcriptOffset = statSync(latest).size } catch { transcriptOffset = 0 }
+      try { transcriptOffset = statSync(latest).size } catch (e) { dbg(`pollTranscript: stat failed: ${e}`); transcriptOffset = 0 }
       transcriptBuf = ''
       dbg(`transcript tail: ${latest} (start offset ${transcriptOffset})`)
       return
@@ -933,7 +803,7 @@ async function pollTranscript() {
       const stream = createReadStream(latest, { start: transcriptOffset, end: size - 1 })
       stream.on('data', (c) => { chunk += c.toString() })
       stream.on('end', () => resolve())
-      stream.on('error', () => resolve())
+      stream.on('error', (e) => { dbg(`pollTranscript stream error: ${e}`); resolve() })
     })
     transcriptOffset = size
     transcriptBuf += chunk
@@ -942,7 +812,7 @@ async function pollTranscript() {
       const line = transcriptBuf.slice(0, idx)
       transcriptBuf = transcriptBuf.slice(idx + 1)
       if (!line.trim()) continue
-      try { handleTranscriptEvent(JSON.parse(line)) } catch {}
+      try { handleTranscriptEvent(JSON.parse(line)) } catch (e) { dbg(`pollTranscript: failed to parse line: ${e}`) }
     }
   } catch (e) { dbg(`pollTranscript error: ${e}`) }
 }
@@ -953,7 +823,8 @@ function startTranscriptMonitor() {
   setInterval(() => { void pollTranscript() }, TRANSCRIPT_POLL_MS)
 }
 
-// Startup — auto-launch router if needed
+// ── Startup — auto-launch router if needed ───────────────────────────────────
+
 if (CHANNEL_MODE && !WORKER_MODE) {
   if (ensureRouter()) {
     const ok = await waitForSocket(5000)
@@ -966,13 +837,19 @@ dbg(`server starting (CHANNEL_MODE=${CHANNEL_MODE}, WORKER_MODE=${WORKER_MODE}, 
 
 let wsClient: lark.WSClient | null = null
 
+// ── Worker mode: connect to router via Unix socket ───────────────────────────
+
 function connectWorker() {
   dbg(`worker mode: connecting to ${ROUTER_SOCK}`)
   let sockBuf = ''
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+
   const sock = netConnect(ROUTER_SOCK, () => {
     dbg('worker: connected to router')
     sock.write(JSON.stringify({ type: 'register', workdir: CLAUDE_WORKDIR ?? process.cwd() }) + '\n')
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
   })
+
   sock.on('data', (chunk) => {
     sockBuf += chunk.toString()
     let idx: number
@@ -996,20 +873,30 @@ function connectWorker() {
       } catch (e) { dbg(`worker: bad message: ${e}`) }
     }
   })
+
   sock.on('error', (e) => dbg(`worker: socket error: ${e}`))
-  sock.on('close', () => dbg('worker: router disconnected'))
+
+  sock.on('close', () => {
+    dbg('worker: router disconnected, scheduling reconnect')
+    reconnectTimer = setTimeout(() => {
+      if (CHANNEL_MODE) {
+        dbg('worker: attempting reconnect to router')
+        connectWorker()
+      }
+    }, 3000)
+  })
 }
 
 if (WORKER_MODE) {
   connectWorker()
 } else if (CHANNEL_MODE) {
-  await fetchBotOpenId()
+  botOpenId = await fetchBotOpenId(apiClient, dbg)
   wsClient = new lark.WSClient({ appId: APP_ID, appSecret: APP_SECRET, loggerLevel: lark.LoggerLevel.warn })
   const dispatcher = new lark.EventDispatcher({ encryptKey: ENCRYPT_KEY }).register({
-    'im.message.receive_v1': async (data: any) => { dbg('im.message.receive_v1 fired'); return handleInbound(data).catch(e => process.stderr.write(`feishu: handleInbound failed: ${e}\n`)) },
-    'card.action.trigger': async (data: any) => { dbg('card.action.trigger fired'); return handleCardAction(data).catch(e => { process.stderr.write(`feishu: handleCardAction failed: ${e}\n`); return {} }) },
+    'im.message.receive_v1': async (data: any) => { dbg('im.message.receive_v1 fired'); return handleInbound(data).catch(e => { process.stderr.write(`feishu: handleInbound failed: ${e}\n`); dbg(`handleInbound failed: ${e}`) }) },
+    'card.action.trigger': async (data: any) => { dbg('card.action.trigger fired'); return handleCardAction(data).catch(e => { process.stderr.write(`feishu: handleCardAction failed: ${e}\n`); dbg(`handleCardAction failed: ${e}`); return {} }) },
   })
-  wsClient.start({ eventDispatcher: dispatcher }).catch(e => process.stderr.write(`feishu: wsClient error: ${e}\n`))
+  wsClient.start({ eventDispatcher: dispatcher }).catch(e => { process.stderr.write(`feishu: wsClient error: ${e}\n`); dbg(`wsClient error: ${e}`) })
 } else {
   dbg('passive mode — no WebSocket, no worker inbox')
 }
@@ -1018,11 +905,13 @@ startTranscriptMonitor()
 
 const mcpPromise = mcp.connect(new StdioServerTransport())
 
+// ── Shutdown ─────────────────────────────────────────────────────────────────
+
 let shuttingDown = false
 function shutdown() {
   if (shuttingDown) return; shuttingDown = true
   process.stderr.write('feishu channel: shutting down\n')
-  try { (wsClient as any)?.disconnect?.() } catch {}
+  try { (wsClient as any)?.disconnect?.() } catch (e) { dbg(`wsClient disconnect failed: ${e}`) }
   setTimeout(() => process.exit(0), 2000)
 }
 process.stdin.on('end', shutdown)
@@ -1030,8 +919,6 @@ process.stdin.on('close', shutdown)
 process.on('SIGTERM', shutdown)
 process.on('SIGINT', shutdown)
 
-// Bun doesn't reliably fire stdin end/close on broken unix domain sockets,
-// so poll ppid — when it becomes 1 the parent (Claude) has exited.
 const initialPpid = process.ppid
 setInterval(() => {
   if (process.ppid !== initialPpid) {
@@ -1040,9 +927,6 @@ setInterval(() => {
   }
 }, 2000).unref()
 
-// In-process detection above can fail if the event loop gets blocked (websocket
-// reconnect spin, broken stdio pipes, etc.). Spawn an independent watchdog that
-// SIGKILLs us via the OS when the parent dies — no event-loop dependency.
 if (initialPpid > 1) {
   spawn('bash', ['-c',
     `while kill -0 ${initialPpid} 2>/dev/null && kill -0 ${process.pid} 2>/dev/null; do sleep 5; done; kill -9 ${process.pid} 2>/dev/null`,

@@ -12,112 +12,42 @@
 import * as lark from '@larksuiteoapi/node-sdk'
 import { createServer, type Socket } from 'net'
 import {
-  readFileSync, appendFileSync, mkdirSync, chmodSync, unlinkSync, existsSync,
+  readFileSync, mkdirSync, chmodSync, unlinkSync, existsSync,
 } from 'fs'
-import { homedir } from 'os'
 import { join, resolve } from 'path'
+
+import {
+  STATE_DIR, ACCESS_FILE, ENV_FILE,
+  type Access, type GroupPolicy,
+  makeDebugger, loadEnv, requireCredentials,
+  readAccess,
+  checkMention,
+  fetchBotOpenId, fetchParentQuote,
+  parseMessageContent, buildAttachmentInfo, formatTimestamp,
+} from './shared.ts'
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
-const STATE_DIR = process.env.FEISHU_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'feishu')
-const ACCESS_FILE = join(STATE_DIR, 'access.json')
-const ENV_FILE = join(STATE_DIR, '.env')
 const DEBUG_LOG = join(STATE_DIR, 'router-debug.log')
 const SOCK_PATH = join(STATE_DIR, 'router.sock')
 
-function dbg(msg: string) {
-  const line = `${new Date().toISOString()} [router] ${msg}\n`
-  process.stderr.write(line)
-  try { appendFileSync(DEBUG_LOG, line) } catch {}
-}
+const dbg = makeDebugger(DEBUG_LOG, '[router] ')
 
-// Load .env
-try {
-  chmodSync(ENV_FILE, 0o600)
-  for (const line of readFileSync(ENV_FILE, 'utf8').split('\n')) {
-    const m = line.match(/^(\w+)=(.*)$/)
-    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2]
-  }
-} catch {}
+// ── Env & credentials ────────────────────────────────────────────────────────
 
-const APP_ID = process.env.FEISHU_APP_ID
-const APP_SECRET = process.env.FEISHU_APP_SECRET
-const ENCRYPT_KEY = process.env.FEISHU_ENCRYPT_KEY ?? ''
+loadEnv(ENV_FILE)
+const { appId: APP_ID, appSecret: APP_SECRET, encryptKey: ENCRYPT_KEY } = requireCredentials()
 
-if (!APP_ID || !APP_SECRET) {
-  process.stderr.write(`feishu router: FEISHU_APP_ID and FEISHU_APP_SECRET required\n  set in ${ENV_FILE}\n`)
-  process.exit(1)
-}
+// ── Access control ───────────────────────────────────────────────────────────
 
-// ── Access control ──────────────────────────────────────────────────────────
-
-type GroupPolicy = { requireMention: boolean; allowFrom: string[]; workdir?: string }
-type Access = {
-  dmPolicy: 'pairing' | 'allowlist' | 'disabled'
-  allowFrom: string[]
-  p2pChats: Record<string, string>
-  groups: Record<string, GroupPolicy>
-  pending: Record<string, unknown>
-  mentionPatterns?: string[]
-  ackReaction?: string
-  defaultWorkdir?: string
-}
-
-function readAccess(): Access {
-  try {
-    const p = JSON.parse(readFileSync(ACCESS_FILE, 'utf8')) as Partial<Access>
-    return {
-      dmPolicy: p.dmPolicy ?? 'pairing',
-      allowFrom: p.allowFrom ?? [],
-      p2pChats: p.p2pChats ?? {},
-      groups: p.groups ?? {},
-      pending: p.pending ?? {},
-      mentionPatterns: p.mentionPatterns,
-      ackReaction: p.ackReaction ?? 'Get',
-      defaultWorkdir: p.defaultWorkdir,
-    }
-  } catch {
-    return { dmPolicy: 'pairing', allowFrom: [], p2pChats: {}, groups: {}, pending: {}, ackReaction: 'Get' }
-  }
+function loadRouterAccess(): Access {
+  return readAccess(ACCESS_FILE, dbg)
 }
 
 // ── Feishu API ──────────────────────────────────────────────────────────────
 
 const apiClient = new lark.Client({ appId: APP_ID, appSecret: APP_SECRET, loggerLevel: lark.LoggerLevel.warn })
 let botOpenId: string | null = null
-async function fetchBotOpenId() {
-  try {
-    const r = await (apiClient as any).bot.botInfo.get()
-    botOpenId = r?.bot?.open_id ?? r?.data?.bot?.open_id ?? null
-    if (botOpenId) dbg(`bot open_id = ${botOpenId}`)
-  } catch (e) { dbg(`could not fetch bot open_id: ${e}`) }
-}
-
-/** Fetch the parent message's text so replies keep context when forwarded. */
-async function fetchParentQuote(parentId: string): Promise<string> {
-  try {
-    const r = await (apiClient as any).im.message.get({ path: { message_id: parentId } })
-    const items: any[] = r?.items ?? r?.data?.items ?? []
-    if (!items.length) return ''
-    const m = items[0]
-    const raw: string = m.body?.content ?? m.content ?? ''
-    let txt = raw
-    try { txt = JSON.parse(raw).text ?? raw } catch {}
-    const mtype: string = m.msg_type ?? m.message_type ?? ''
-    const who: string = m.sender?.id ?? m.sender?.sender_id ?? ''
-    const preview = (txt || `[${mtype}]`).replace(/\s+/g, ' ').trim().slice(0, 500)
-    return `> [replying to ${who}]: ${preview}\n\n`
-  } catch (e) { dbg(`fetchParentQuote failed: ${e}`); return '' }
-}
-
-function checkMention(mentions: any[], text: string, patterns?: string[]): boolean {
-  for (const m of mentions) {
-    if (m.mentioned_type === 'bot') return true
-    if (botOpenId && m.id?.open_id === botOpenId) return true
-  }
-  for (const p of patterns ?? []) { try { if (new RegExp(p, 'i').test(text)) return true } catch {} }
-  return false
-}
 
 // ── Worker registry (Unix socket) ───────────────────────────────────────────
 
@@ -125,7 +55,6 @@ type Worker = { socket: Socket; workdir: string; buf: string }
 
 const workers = new Map<Socket, Worker>()
 
-/** Find worker whose workdir matches the target. */
 function findWorker(workdir: string): Worker | undefined {
   const target = resolve(workdir)
   for (const w of workers.values()) {
@@ -138,7 +67,6 @@ function sendToWorker(w: Worker, payload: Record<string, unknown>) {
   try { w.socket.write(JSON.stringify(payload) + '\n') } catch (e) { dbg(`send failed: ${e}`) }
 }
 
-/** Route a payload to the worker matching the given workdir. Returns true if delivered. */
 function routeToWorkdir(workdir: string, payload: Record<string, unknown>): boolean {
   const w = findWorker(workdir)
   if (!w) { dbg(`no worker for workdir ${workdir}`); return false }
@@ -146,9 +74,8 @@ function routeToWorkdir(workdir: string, payload: Record<string, unknown>): bool
   return true
 }
 
-/** Shut down router if no workers remain after a grace period. */
 let idleTimer: ReturnType<typeof setTimeout> | null = null
-const IDLE_GRACE_MS = 10_000  // wait 10s before shutting down
+const IDLE_GRACE_MS = 10_000
 
 function scheduleIdleShutdown() {
   if (idleTimer) clearTimeout(idleTimer)
@@ -200,7 +127,7 @@ const sockServer = createServer((socket) => {
 // ── Message routing ─────────────────────────────────────────────────────────
 
 function resolveWorkdir(chatId: string, chatType: string): string | undefined {
-  const access = readAccess()
+  const access = loadRouterAccess()
   if (chatType === 'group') {
     const wd = access.groups[chatId]?.workdir
     if (wd) return wd
@@ -223,62 +150,32 @@ async function handleInbound(data: any) {
   const createTime: string = message.create_time ?? ''
   if (!senderId || !chatId || !messageId) return
 
-  let text = ''
-  const postImageKeys: string[] = []
-  try {
-    const parsed = JSON.parse(contentStr)
-    if (msgType === 'post') {
-      if (parsed.title) text += parsed.title
-      const rows: any[] = Array.isArray(parsed.content) ? parsed.content : []
-      for (const row of rows) {
-        if (!Array.isArray(row)) continue
-        const parts: string[] = []
-        for (const seg of row) {
-          if (seg?.tag === 'text' && seg.text) parts.push(seg.text)
-          else if (seg?.tag === 'a' && seg.text) parts.push(`${seg.text}(${seg.href ?? ''})`)
-          else if (seg?.tag === 'at' && (seg.user_name ?? seg.user_id)) parts.push(`@${seg.user_name ?? seg.user_id}`)
-          else if (seg?.tag === 'img' && seg.image_key) postImageKeys.push(seg.image_key)
-        }
-        if (parts.length) text += (text ? '\n' : '') + parts.join(' ')
-      }
-    } else {
-      text = parsed.text ?? ''
-    }
-  } catch { text = contentStr }
+  const { text, postImageKeys } = parseMessageContent(msgType, contentStr)
 
-  const access = readAccess()
+  const access = loadRouterAccess()
 
-  // Access check
   if (chatType === 'p2p') {
     if (!access.allowFrom.includes(senderId)) { dbg(`dm from unknown ${senderId}, dropping`); return }
   } else {
     const policy = access.groups[chatId]
     if (!policy) { dbg(`group ${chatId} not configured, dropping`); return }
     if (policy.allowFrom.length > 0 && !policy.allowFrom.includes(senderId)) return
-    const mentioned = checkMention(mentions, text, access.mentionPatterns)
+    const mentioned = checkMention(mentions, text, botOpenId, access.mentionPatterns)
     if ((policy.requireMention ?? true) && !mentioned) return
   }
 
-  // Ack reaction
   if (access.ackReaction) {
     void (apiClient as any).im.messageReaction.create({
       path: { message_id: messageId },
       data: { reaction_type: { emoji_type: access.ackReaction } },
-    }).catch(() => {})
+    }).catch((e: unknown) => dbg(`ack reaction failed: ${e}`))
   }
 
-  // Build attachment info
-  const atts: string[] = []
-  if (msgType === 'file') { try { const c = JSON.parse(contentStr); atts.push(`${c.file_name ?? 'file'} (file, key:${c.file_key ?? ''})`) } catch {} }
-  else if (msgType === 'image') { try { const c = JSON.parse(contentStr); atts.push(`image (image/jpeg, key:${c.image_key ?? ''})`) } catch {} }
-  for (const k of postImageKeys) atts.push(`image (image/jpeg, key:${k})`)
-
-  const ts = createTime
-    ? new Date(parseInt(createTime) > 1e12 ? parseInt(createTime) : parseInt(createTime) * 1000).toISOString()
-    : new Date().toISOString()
+  const atts = buildAttachmentInfo(msgType, contentStr, postImageKeys)
+  const ts = formatTimestamp(createTime)
 
   const parentId: string = (message as any).parent_id ?? ''
-  const quotePrefix = parentId ? await fetchParentQuote(parentId) : ''
+  const quotePrefix = parentId ? await fetchParentQuote(apiClient, parentId, dbg) : ''
   const body = text || (atts.length ? '(attachment)' : '')
   const content = quotePrefix + body
   if (!content) return
@@ -316,7 +213,6 @@ async function handleCardAction(data: any): Promise<Record<string, unknown>> {
   const action = value.action as string | undefined
   if (!code || !action) return {}
 
-  // Find the worker that sent this card — route by chat_id or broadcast
   const chatId = data?.open_chat_id ?? ''
   const workdir = chatId ? resolveWorkdir(chatId, 'group') ?? resolveWorkdir(chatId, 'p2p') : undefined
 
@@ -324,7 +220,7 @@ async function handleCardAction(data: any): Promise<Record<string, unknown>> {
     const behavior = action === 'perm_deny' ? 'deny' : 'allow'
     const payload = { type: 'permission_response', request_id: code, behavior }
     if (workdir) routeToWorkdir(workdir, payload)
-    else for (const w of workers.values()) sendToWorker(w, payload) // broadcast if unknown
+    else for (const w of workers.values()) sendToWorker(w, payload)
 
     const statusText = behavior === 'allow' ? '✅ 已允许' : '❌ 已拒绝'
     return {
@@ -378,10 +274,9 @@ async function handleCardAction(data: any): Promise<Record<string, unknown>> {
 
 dbg('router starting')
 mkdirSync(STATE_DIR, { recursive: true })
-await fetchBotOpenId()
+botOpenId = await fetchBotOpenId(apiClient, dbg)
 
-// Clean up stale socket
-if (existsSync(SOCK_PATH)) { try { unlinkSync(SOCK_PATH) } catch {} }
+if (existsSync(SOCK_PATH)) { try { unlinkSync(SOCK_PATH) } catch (e) { dbg(`failed to unlink stale socket: ${e}`) } }
 
 sockServer.listen(SOCK_PATH, () => {
   chmodSync(SOCK_PATH, 0o600)
@@ -402,7 +297,6 @@ const dispatcher = new lark.EventDispatcher({ encryptKey: ENCRYPT_KEY }).registe
 
 wsClient.start({ eventDispatcher: dispatcher }).catch(e => dbg(`wsClient error: ${e}`))
 
-// Status on SIGUSR1
 process.on('SIGUSR1', () => {
   const lines = [`\n=== Router Status ===`, `workers: ${workers.size}`]
   for (const w of workers.values()) {
@@ -416,16 +310,15 @@ function shutdown() {
   if (shuttingDown) return; shuttingDown = true
   dbg('shutting down')
   sockServer.close()
-  try { unlinkSync(SOCK_PATH) } catch {}
-  try { (wsClient as any).disconnect?.() } catch {}
+  try { unlinkSync(SOCK_PATH) } catch (e) { dbg(`failed to unlink socket on shutdown: ${e}`) }
+  try { (wsClient as any).disconnect?.() } catch (e) { dbg(`wsClient disconnect failed: ${e}`) }
   setTimeout(() => process.exit(0), 2000)
 }
 process.on('SIGTERM', shutdown)
 process.on('SIGINT', shutdown)
 
-const access = readAccess()
+const access = loadRouterAccess()
 const groupCount = Object.keys(access.groups).length
 dbg(`router ready — ${groupCount} groups, defaultWorkdir=${access.defaultWorkdir ?? '(none)'}`)
 
-// Keep alive
 await new Promise(() => {})

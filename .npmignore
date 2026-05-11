@@ -6,3 +6,5 @@
 bun.lock
 node_modules/
 server.test.ts
+tsconfig.json
+biome.json
