@@ -203,7 +203,7 @@ claude --dangerously-load-development-channels plugin:feishu@feishu-local
 In your Claude Code terminal:
 
 ```
-/feishu:auth cli_YOUR_APP_ID YOUR_APP_SECRET
+claude-feishu auth cli_YOUR_APP_ID YOUR_APP_SECRET
 ```
 
 Credentials are stored in `~/.claude/channels/feishu/.env` (mode 600).
@@ -216,7 +216,7 @@ Credentials are stored in `~/.claude/channels/feishu/.env` (mode 600).
 4. In Claude Code, run:
 
    ```
-   /feishu:access pair <code>
+   claude-feishu access pair <code>
    ```
 
 5. The bot confirms: *"Paired! Say hi to Claude."*
@@ -266,7 +266,7 @@ The **first** instance auto-spawns the Router. Subsequent instances connect as w
 Router mode supports the same DM pairing flow as Channel mode. When an unknown user sends a DM:
 
 1. The Router generates a pairing code and replies with instructions
-2. The user runs `/feishu:access pair <code>` in **any** connected Claude Code terminal
+2. The user runs `claude-feishu access pair <code>` in **any** connected Claude Code terminal
 3. The user is added to `allowFrom` and can now send messages
 
 > **Note:** Pairing approval must be done in a Claude Code terminal — never from Feishu messages (prompt injection protection).
@@ -288,12 +288,12 @@ cat ~/.claude/channels/feishu/router-debug.log | tail -10
 
 ## Access Management
 
-All access commands are run in your Claude Code terminal via `/feishu:access`.
+All access commands are run in your Claude Code terminal via `claude-feishu access`.
 
 ### Check Status
 
 ```
-/feishu:access
+claude-feishu access
 ```
 
 ### DM Policies
@@ -305,7 +305,7 @@ All access commands are run in your Claude Code terminal via `/feishu:access`.
 | `disabled` | All DMs dropped |
 
 ```
-/feishu:access policy allowlist
+claude-feishu access policy allowlist
 ```
 
 > **Tip:** Once all your users are paired, switch to `allowlist` to prevent unsolicited pairing requests.
@@ -314,16 +314,16 @@ All access commands are run in your Claude Code terminal via `/feishu:access`.
 
 ```bash
 # Approve a pairing
-/feishu:access pair <code>
+claude-feishu access pair <code>
 
 # Deny a pairing
-/feishu:access deny <code>
+claude-feishu access deny <code>
 
 # Manually allow a user by open_id
-/feishu:access allow ou_xxxxxxxxxxxxxxxxxxxx
+claude-feishu access allow ou_xxxxxxxxxxxxxxxxxxxx
 
 # Remove a user
-/feishu:access remove ou_xxxxxxxxxxxxxxxxxxxx
+claude-feishu access remove ou_xxxxxxxxxxxxxxxxxxxx
 ```
 
 ### Group Chats
@@ -332,29 +332,29 @@ Groups are off by default. The bot must be added to the group by a group admin f
 
 ```bash
 # Enable a group (responds on @mention only)
-/feishu:access group add oc_xxxxxxxxxxxxxxxxxxxx
+claude-feishu access group add oc_xxxxxxxxxxxxxxxxxxxx
 
 # Respond to all messages (no @mention needed)
-/feishu:access group add oc_xxxxxxxxxxxxxxxxxxxx --no-mention
+claude-feishu access group add oc_xxxxxxxxxxxxxxxxxxxx --no-mention
 
 # Restrict to specific users within the group
-/feishu:access group add oc_xxxxxxxxxxxxxxxxxxxx --allow ou_id1,ou_id2
+claude-feishu access group add oc_xxxxxxxxxxxxxxxxxxxx --allow ou_id1,ou_id2
 
 # Remove a group
-/feishu:access group rm oc_xxxxxxxxxxxxxxxxxxxx
+claude-feishu access group rm oc_xxxxxxxxxxxxxxxxxxxx
 ```
 
 ### Delivery Settings
 
 ```bash
 # React to received messages with an emoji (default: Get)
-/feishu:access set ackReaction Get
+claude-feishu access set ackReaction Get
 
 # Set max characters per message chunk
-/feishu:access set textChunkLimit 4096
+claude-feishu access set textChunkLimit 4096
 
 # Custom mention patterns for group chats
-/feishu:access set mentionPatterns ["@claude","@assistant"]
+claude-feishu access set mentionPatterns ["@claude","@assistant"]
 ```
 
 ---
@@ -538,7 +538,7 @@ chmod 600 ~/.claude/channels/feishu/.env
 Or use the skill command inside a Claude Code session:
 
 ```
-/feishu:auth cli_YOUR_APP_ID YOUR_APP_SECRET
+claude-feishu auth cli_YOUR_APP_ID YOUR_APP_SECRET
 ```
 
 ### Multi-Group Router Configuration
@@ -590,13 +590,13 @@ cd /path/to/project-b && claude-feishu &  # connects as worker
 After a user sends a DM to the bot, they receive a pairing code. Approve it:
 
 ```
-/feishu:access pair ABCDE
+claude-feishu access pair ABCDE
 ```
 
 Or pre-authorize users by open_id:
 
 ```
-/feishu:access allow ou_xxxxxxxxxxxxxxxxxxxx
+claude-feishu access allow ou_xxxxxxxxxxxxxxxxxxxx
 ```
 
 ### Verification Checklist
@@ -627,7 +627,7 @@ tail -5 ~/.claude/channels/feishu/router-debug.log
 | Router not starting | `router-debug.log` | Check if port/socket is in use |
 | Worker not connecting | `debug.log` for "worker" entries | Verify Router socket exists |
 | Pairing code not received | `dmPolicy` in `access.json` | Must be `pairing`, not `disabled` |
-| Group messages ignored | Group in `access.json`? | `/feishu:access group add <chat_id>` |
+| Group messages ignored | Group in `access.json`? | `claude-feishu access group add <chat_id>` |
 | Card buttons not working | Callback configured? | Add `card.action.trigger` in Feishu app |
 
 ---

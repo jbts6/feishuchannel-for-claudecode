@@ -168,7 +168,7 @@ async function handleInbound(data: any) {
     try {
       await (apiClient as any).im.message.reply({
         path: { message_id: messageId },
-        data: { msg_type: 'text', content: JSON.stringify({ text: `${lead} — run in Claude Code:\n\n/feishu:access pair ${result.code}` }), reply_in_thread: false },
+        data: { msg_type: 'text', content: JSON.stringify({ text: `${lead} — run:\n\nclaude-feishu access pair ${result.code}` }), reply_in_thread: false },
       })
     } catch (e) { dbg(`pairing reply failed: ${e}`) }
     return

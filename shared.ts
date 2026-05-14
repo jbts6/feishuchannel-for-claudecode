@@ -169,7 +169,7 @@ export function assertAllowedChat(chatId: string, a: Access) {
   if (oid !== undefined && a.allowFrom.includes(oid)) return
   if (a.allowFrom.includes(chatId)) return
   if (chatId in a.groups) return
-  throw new Error(`chat ${chatId} is not allowlisted — add via /feishu:access`)
+  throw new Error(`chat ${chatId} is not allowlisted — add via claude-feishu access`)
 }
 
 // ── Confirm code generation ──────────────────────────────────────────────────

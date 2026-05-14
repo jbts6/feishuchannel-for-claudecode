@@ -38,12 +38,12 @@ HTTPS endpoint required.
 
 | Policy | Behavior |
 |---|---|
-| `pairing` (default) | Reply with a pairing code; drop the message. Approve with `/feishu:access pair <code>`. |
+| `pairing` (default) | Reply with a pairing code; drop the message. Approve with `claude-feishu access pair <code>`. |
 | `allowlist` | Drop silently. No reply. Use once all needed users are allowlisted. |
 | `disabled` | Drop everything, including allowlisted users and group chats. |
 
 ```
-/feishu:access policy allowlist
+claude-feishu access policy allowlist
 ```
 
 ## User IDs (open_id)
@@ -55,8 +55,8 @@ To add someone without pairing: get their open_id from the Feishu admin console
 or ask them to DM the bot and initiate pairing.
 
 ```
-/feishu:access allow ou_xxxxxxxxxxxxxxxxxxxx
-/feishu:access remove ou_xxxxxxxxxxxxxxxxxxxx
+claude-feishu access allow ou_xxxxxxxxxxxxxxxxxxxx
+claude-feishu access remove ou_xxxxxxxxxxxxxxxxxxxx
 ```
 
 ## Group chats
@@ -66,16 +66,16 @@ Group chats are **off by default**. Opt in per-group using the group's chat_id
 
 ```
 # Opt in a group (respond only on @mention)
-/feishu:access group add oc_xxxxxxxxxxxxxxxxxxxx
+claude-feishu access group add oc_xxxxxxxxxxxxxxxxxxxx
 
 # Respond to all messages in the group (no mention required)
-/feishu:access group add oc_xxxxxxxxxxxxxxxxxxxx --no-mention
+claude-feishu access group add oc_xxxxxxxxxxxxxxxxxxxx --no-mention
 
 # Restrict to specific users within the group
-/feishu:access group add oc_xxxxxxxxxxxxxxxxxxxx --allow ou_id1,ou_id2
+claude-feishu access group add oc_xxxxxxxxxxxxxxxxxxxx --allow ou_id1,ou_id2
 
 # Remove a group
-/feishu:access group rm oc_xxxxxxxxxxxxxxxxxxxx
+claude-feishu access group rm oc_xxxxxxxxxxxxxxxxxxxx
 ```
 
 The bot must be added to the group by a group admin before it can receive messages.
@@ -84,7 +84,7 @@ The bot must be added to the group by a group admin before it can receive messag
 
 1. User opens a DM with the bot in Feishu (search by app name)
 2. User sends any message
-3. Bot replies: *"Pairing required — run in Claude Code: `/feishu:access pair <code>`"*
+3. Bot replies: *"Pairing required — run: `claude-feishu access pair <code>`"*
 4. User runs that command in their Claude Code terminal
 5. Bot confirms: *"Paired! Say hi to Claude."*
 
@@ -92,7 +92,7 @@ The code is valid for 1 hour. After 2 messages without approval, the sender is s
 
 ## Delivery config
 
-Customize via `/feishu:access set`:
+Customize via `claude-feishu access set`:
 
 | Key | Default | Description |
 |---|---|---|
@@ -101,22 +101,22 @@ Customize via `/feishu:access set`:
 | `mentionPatterns` | `[]` | Regex patterns to count as a mention in group chats |
 
 ```
-/feishu:access set ackReaction THUMBSUP
-/feishu:access set mentionPatterns ["@claude","@assistant"]
+claude-feishu access set ackReaction THUMBSUP
+claude-feishu access set mentionPatterns ["@claude","@assistant"]
 ```
 
 ## Setup commands
 
 ```
 # Configure credentials
-/feishu:auth cli_xxxx your_app_secret
+claude-feishu auth cli_xxxx your_app_secret
 
 # Check status
-/feishu:auth
+claude-feishu auth
 
 # Pair a new user
-/feishu:access pair <code>
+claude-feishu access pair <code>
 
 # Check access status
-/feishu:access
+claude-feishu access
 ```

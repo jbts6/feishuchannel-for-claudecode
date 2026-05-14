@@ -11,7 +11,8 @@ A Feishu (Lark) channel plugin for Claude Code using the MCP Channel protocol. P
   - **Channel mode**: direct Feishu WebSocket connection (fallback if router fails to start)
   - **Passive mode**: no remote connection (non-channel Claude instances)
 - **router.ts** — Central hub. Single Feishu WebSocket, routes messages to workers by workdir. Auto-spawned by the first worker that starts
-- **bin/claude-feishu** — Shortcut for `claude --dangerously-load-development-channels plugin:feishu@feishu-local`
+- **bin/claude-feishu** — Launcher for Claude Code with Feishu channel; also handles `auth` and `access` CLI subcommands for management
+- **bin/cli.ts** — CLI tool for `auth` and `access` management commands
 
 ## Key Design Decisions
 
@@ -38,6 +39,8 @@ bun test              # Run tests
 bun run start         # Start MCP server (called by Claude Code)
 bun run router        # Start multi-group router
 claude-feishu         # Launch Claude Code with Feishu channel
+claude-feishu auth    # Show/manage Feishu credentials
+claude-feishu access  # Show/manage access control (pairing, allowlist, groups, policy)
 ```
 
 ## Testing

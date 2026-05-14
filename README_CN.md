@@ -203,7 +203,7 @@ claude --dangerously-load-development-channels plugin:feishu@feishu-local
 在 Claude Code 终端中运行：
 
 ```
-/feishu:auth cli_YOUR_APP_ID YOUR_APP_SECRET
+claude-feishu auth cli_YOUR_APP_ID YOUR_APP_SECRET
 ```
 
 凭据存储在 `~/.claude/channels/feishu/.env`（权限 600）。
@@ -216,7 +216,7 @@ claude --dangerously-load-development-channels plugin:feishu@feishu-local
 4. 在 Claude Code 中运行：
 
    ```
-   /feishu:access pair <配对码>
+   claude-feishu access pair <配对码>
    ```
 
 5. 机器人确认：*"Paired! Say hi to Claude."*
@@ -266,7 +266,7 @@ cd /path/to/project-c && claude-feishu   # 后续：连接到已有 Router
 Router 模式支持与 Channel 模式相同的 DM 配对流程。当未知用户发送私聊消息时：
 
 1. Router 生成配对码并回复操作指引
-2. 用户在**任意**已连接的 Claude Code 终端运行 `/feishu:access pair <配对码>`
+2. 用户在**任意**已连接的 Claude Code 终端运行 `claude-feishu access pair <配对码>`
 3. 用户被添加到 `allowFrom`，此后可以正常发消息
 
 > **注意：** 配对审批必须在 Claude Code 终端中完成——绝不能从飞书消息中审批（防止提示注入攻击）。
@@ -288,12 +288,12 @@ cat ~/.claude/channels/feishu/router-debug.log | tail -10
 
 ## 访问管理
 
-所有访问管理命令在 Claude Code 终端中通过 `/feishu:access` 运行。
+所有访问管理命令在 Claude Code 终端中通过 `claude-feishu access` 运行。
 
 ### 查看状态
 
 ```
-/feishu:access
+claude-feishu access
 ```
 
 ### 私聊策略
@@ -305,7 +305,7 @@ cat ~/.claude/channels/feishu/router-debug.log | tail -10
 | `disabled` | 所有私聊消息被丢弃 |
 
 ```
-/feishu:access policy allowlist
+claude-feishu access policy allowlist
 ```
 
 > **提示：** 所有用户配对完成后，切换到 `allowlist` 可阻止未授权的配对请求。
@@ -314,16 +314,16 @@ cat ~/.claude/channels/feishu/router-debug.log | tail -10
 
 ```bash
 # 审批配对
-/feishu:access pair <配对码>
+claude-feishu access pair <配对码>
 
 # 拒绝配对
-/feishu:access deny <配对码>
+claude-feishu access deny <配对码>
 
 # 按 open_id 手动允许用户
-/feishu:access allow ou_xxxxxxxxxxxxxxxxxxxx
+claude-feishu access allow ou_xxxxxxxxxxxxxxxxxxxx
 
 # 移除用户
-/feishu:access remove ou_xxxxxxxxxxxxxxxxxxxx
+claude-feishu access remove ou_xxxxxxxxxxxxxxxxxxxx
 ```
 
 ### 群聊管理
@@ -332,29 +332,29 @@ cat ~/.claude/channels/feishu/router-debug.log | tail -10
 
 ```bash
 # 启用群聊（仅 @提及时响应）
-/feishu:access group add oc_xxxxxxxxxxxxxxxxxxxx
+claude-feishu access group add oc_xxxxxxxxxxxxxxxxxxxx
 
 # 响应所有消息（无需 @提及）
-/feishu:access group add oc_xxxxxxxxxxxxxxxxxxxx --no-mention
+claude-feishu access group add oc_xxxxxxxxxxxxxxxxxxxx --no-mention
 
 # 限制群内特定用户
-/feishu:access group add oc_xxxxxxxxxxxxxxxxxxxx --allow ou_id1,ou_id2
+claude-feishu access group add oc_xxxxxxxxxxxxxxxxxxxx --allow ou_id1,ou_id2
 
 # 移除群聊
-/feishu:access group rm oc_xxxxxxxxxxxxxxxxxxxx
+claude-feishu access group rm oc_xxxxxxxxxxxxxxxxxxxx
 ```
 
 ### 投递设置
 
 ```bash
 # 收到消息时回应表情（默认：Get）
-/feishu:access set ackReaction Get
+claude-feishu access set ackReaction Get
 
 # 设置每条消息的最大字符数
-/feishu:access set textChunkLimit 4096
+claude-feishu access set textChunkLimit 4096
 
 # 群聊自定义触发模式
-/feishu:access set mentionPatterns ["@claude","@assistant"]
+claude-feishu access set mentionPatterns ["@claude","@assistant"]
 ```
 
 ---
@@ -538,7 +538,7 @@ chmod 600 ~/.claude/channels/feishu/.env
 或在 Claude Code 会话中使用技能命令：
 
 ```
-/feishu:auth cli_YOUR_APP_ID YOUR_APP_SECRET
+claude-feishu auth cli_YOUR_APP_ID YOUR_APP_SECRET
 ```
 
 ### 多群路由配置
@@ -590,13 +590,13 @@ cd /path/to/project-b && claude-feishu &  # 连接为 Worker
 用户向机器人发送私聊消息后，收到配对码。审批：
 
 ```
-/feishu:access pair ABCDE
+claude-feishu access pair ABCDE
 ```
 
 或按 open_id 预授权用户：
 
 ```
-/feishu:access allow ou_xxxxxxxxxxxxxxxxxxxx
+claude-feishu access allow ou_xxxxxxxxxxxxxxxxxxxx
 ```
 
 ### 验证清单
@@ -627,7 +627,7 @@ tail -5 ~/.claude/channels/feishu/router-debug.log
 | Router 未启动 | `router-debug.log` | 检查端口/socket 是否被占用 |
 | Worker 未连接 | `debug.log` 中的 "worker" 条目 | 验证 Router socket 是否存在 |
 | 未收到配对码 | `access.json` 中的 `dmPolicy` | 必须为 `pairing`，不能是 `disabled` |
-| 群消息被忽略 | 群是否在 `access.json` 中？ | `/feishu:access group add <chat_id>` |
+| 群消息被忽略 | 群是否在 `access.json` 中？ | `claude-feishu access group add <chat_id>` |
 | 卡片按钮无效 | 回调是否已配置？ | 在飞书应用中添加 `card.action.trigger` |
 
 ---

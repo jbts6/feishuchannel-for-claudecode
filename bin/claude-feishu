@@ -1,4 +1,8 @@
 #!/bin/bash
+# Launch Claude Code with Feishu channel, or run management commands.
+case "${1:-}" in
+  auth|access) exec bun "$(dirname "$0")/cli.ts" "$@" ;;
+esac
 # Launch Claude Code with Feishu channel.
 # Auto-resumes a session whose name ends with the current directory name.
 # Falls back to the interactive session picker if no match is found.
@@ -11,8 +15,12 @@ PROJECT_DIR="$HOME/.claude/projects/$PROJECT_KEY"
 # Prefer session named "cc_<dir>", fall back to any session ending with dir name
 SEARCH=""
 HAS_SESSIONS=0
-if [ -d "$PROJECT_DIR" ] && compgen -G "$PROJECT_DIR/*.jsonl" > /dev/null; then
-  HAS_SESSIONS=1
+if [ -d "$PROJECT_DIR" ]; then
+  for _f in "$PROJECT_DIR"/*.jsonl; do
+    if [ -f "$_f" ]; then HAS_SESSIONS=1; break; fi
+  done
+fi
+if [ "$HAS_SESSIONS" = "1" ]; then
   if grep -rl "\"customTitle\":\"cc_${DIR_NAME}\"" "$PROJECT_DIR"/*.jsonl >/dev/null 2>&1; then
     SEARCH="cc_${DIR_NAME}"
   elif grep -rl "\"customTitle\":\".*${DIR_NAME}\"" "$PROJECT_DIR"/*.jsonl >/dev/null 2>&1; then

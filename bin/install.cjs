@@ -60,9 +60,9 @@ console.log(`
   1. Start Claude with Feishu channel:
      $ claude-feishu
 
-  2. Configure credentials (in Claude Code terminal):
-     /feishu:auth <app_id> <app_secret>
+  2. Configure credentials:
+     $ claude-feishu auth <app_id> <app_secret>
 
   3. Pair your Feishu account — send a message to the bot, then:
-     /feishu:access pair <code>
+     $ claude-feishu access pair <code>
 `)
