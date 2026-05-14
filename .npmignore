@@ -1,6 +1,5 @@
 *.png
 *.jpg
-.mcp.json
 .claude/
 .playwright-mcp/
 .git
