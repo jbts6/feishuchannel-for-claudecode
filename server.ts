@@ -78,7 +78,10 @@ function findChannelAncestorPid(): number {
 }
 
 function getProcessCwd(pid: number): string | undefined {
-  if (IS_WIN32) return undefined
+  if (IS_WIN32) {
+    if (process.env.CLAUDE_PROJECT_DIR) return process.env.CLAUDE_PROJECT_DIR
+    return undefined
+  }
   try {
     const out = execSync(`lsof -a -p ${pid} -d cwd -Fn`, { encoding: 'utf8' })
     const m = out.match(/^n(.+)$/m)

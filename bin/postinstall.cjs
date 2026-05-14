@@ -14,7 +14,7 @@ mkdirSync(binDir, { recursive: true })
 if (isWin) {
   const target = join(binDir, 'claude-feishu.cmd')
   if (!existsSync(target)) {
-    writeFileSync(target, '@echo off\r\nclaude --dangerously-load-development-channels plugin:feishu@feishu-local %*\r\n')
+    writeFileSync(target, '@echo off\r\nset CLAUDE_PROJECT_DIR=%cd%\r\nclaude --dangerously-load-development-channels plugin:feishu@feishu-local %*\r\n')
   }
 } else {
   const target = join(binDir, 'claude-feishu')
