@@ -441,10 +441,8 @@ mcp.setNotificationHandler(
 // ── Tool definitions ─────────────────────────────────────────────────────────
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [
-  { name: 'reply', description: 'Send a message to a Feishu chat. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) to quote-reply, and files (absolute paths) to attach.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, text: { type: 'string' }, reply_to: { type: 'string', description: 'Message ID to quote-reply.' }, files: { type: 'array', items: { type: 'string' }, description: 'Absolute paths. Images (.png/.jpg etc) sent as image messages; others as file messages.' } }, required: ['chat_id', 'text'] } },
-  { name: 'react', description: 'Add an emoji reaction to a Feishu message. Use emoji_type codes — gestures: "THUMBSUP", "ThumbsDown", "OK", "CLAP", "APPLAUSE", "FINGERHEART", "MUSCLE", "THANKS", "DONE", "SALUTE", "HIGHFIVE", "FISTBUMP"; faces: "SMILE", "LAUGH", "LOL", "WOW", "CRY", "SOB", "THINKING", "HUG", "ANGRY", "SHOCKED", "LOVE", "BLUSH", "WINK", "FACEPALM", "SILENCE"; work: "Get", "LGTM", "OnIt", "OneSecond", "Typing", "Sigh", "YouAreTheBest", "MeMeMe"; symbols: "HEART", "MONEY", "ROSE", "PARTY", "BEER", "CAKE", "GIFT".', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' }, emoji: { type: 'string' } }, required: ['chat_id', 'message_id', 'emoji'] } },
+  { name: 'reply', description: 'Send a message to a Feishu chat. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) to quote-reply, and files (absolute paths) to attach.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, text: { type: 'string' }, reply_to: { type: 'string', description: 'Message ID to quote-reply.' } }, required: ['chat_id', 'text'] } },
   { name: 'edit_message', description: "Edit a text message the bot sent. Edits don't push notifications — send a new reply when a long task completes.", inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' }, text: { type: 'string' } }, required: ['chat_id', 'message_id', 'text'] } },
-  { name: 'download_attachment', description: 'Download a file or image from a Feishu message to the local inbox. Returns paths ready to Read.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' } }, required: ['chat_id', 'message_id'] } },
   { name: 'fetch_messages', description: 'Fetch recent messages from a Feishu chat. Returns oldest-first with message IDs.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, limit: { type: 'number', description: 'Max messages (default 20, max 50).' } }, required: ['chat_id'] } },
   { name: 'send_confirm_card', description: 'Send an interactive card with ✅ Confirm and ❌ Cancel buttons to ask the user before taking a risky or irreversible action. When the user responds, a "CONFIRMED <code>" or "CANCELLED <code>" message arrives in this session. Wait for it before proceeding.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, content: { type: 'string', description: 'Action description shown in the card (supports lark_md markdown).' }, title: { type: 'string', description: 'Card title. Default: "⚡ 操作确认"' } }, required: ['chat_id', 'content'] } },
 ] }))
@@ -491,52 +489,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         clearReminder(chatId)
         return { content: [{ type: 'text', text: ids.length === 1 ? `sent (id: ${ids[0]})` : `sent ${ids.length} messages (ids: ${ids.join(', ')})` }] }
       }
-      case 'react': {
-        assertAllowedChat(a.chat_id as string, loadAccess())
-        await (apiClient as any).im.messageReaction.create({ path: { message_id: a.message_id as string }, data: { reaction_type: { emoji_type: a.emoji as string } } })
-        return { content: [{ type: 'text', text: 'reacted' }] }
-      }
+      
       case 'edit_message': {
         assertAllowedChat(a.chat_id as string, loadAccess())
         await (apiClient as any).im.message.update({ path: { message_id: a.message_id as string }, data: { msg_type: 'text', content: JSON.stringify({ text: a.text as string }) } })
         return { content: [{ type: 'text', text: `edited (id: ${a.message_id})` }] }
       }
-      case 'download_attachment': {
-        const chatId = a.chat_id as string, msgId = a.message_id as string
-        assertAllowedChat(chatId, loadAccess())
-        const mr = await (apiClient as any).im.message.get({ path: { message_id: msgId } })
-        const items: any[] = mr?.items ?? mr?.data?.items ?? []
-        if (!items.length) return { content: [{ type: 'text', text: 'message not found' }] }
-        const msg = items[0]
-        const msgType: string = msg.msg_type ?? msg.message_type ?? ''
-        let cnt: Record<string, string> = {}
-        try { cnt = JSON.parse(msg.body?.content ?? msg.content ?? '{}') } catch (e) { dbg(`download_attachment: failed to parse message content: ${e}`) }
-        if (msgType === 'image') {
-          if (!cnt.image_key) return { content: [{ type: 'text', text: 'no image_key found' }] }
-          const p = await downloadResource(msgId, cnt.image_key, 'image', 'image.png')
-          return { content: [{ type: 'text', text: `downloaded:\n  ${p}` }] }
-        }
-        if (msgType === 'file') {
-          if (!cnt.file_key) return { content: [{ type: 'text', text: 'no file_key found' }] }
-          const p = await downloadResource(msgId, cnt.file_key, 'file', cnt.file_name ?? 'file')
-          return { content: [{ type: 'text', text: `downloaded:\n  ${p}  (${cnt.file_name ?? 'file'})` }] }
-        }
-        if (msgType === 'post') {
-          const rows: any[] = Array.isArray((cnt as any).content) ? (cnt as any).content : []
-          const keys: string[] = []
-          for (const row of rows) {
-            if (!Array.isArray(row)) continue
-            for (const seg of row) if (seg?.tag === 'img' && seg.image_key) keys.push(seg.image_key)
-          }
-          if (!keys.length) return { content: [{ type: 'text', text: 'post message has no embedded images' }] }
-          const paths: string[] = []
-          for (let i = 0; i < keys.length; i++) {
-            paths.push(await downloadResource(msgId, keys[i]!, 'image', `post-image-${i + 1}.png`))
-          }
-          return { content: [{ type: 'text', text: `downloaded:\n  ${paths.join('\n  ')}` }] }
-        }
-        return { content: [{ type: 'text', text: `message type '${msgType}' has no downloadable attachment` }] }
-      }
+     
       case 'fetch_messages': {
         const chatId = a.chat_id as string, limit = Math.min((a.limit as number | undefined) ?? 20, 50)
         assertAllowedChat(chatId, loadAccess())
