@@ -1,7 +1,7 @@
 # Feishu Channel for Claude Code
 
-[![npm version](https://img.shields.io/npm/v/feishuchannel-for-claudecode)](https://www.npmjs.com/package/feishuchannel-for-claudecode)
-[![license](https://img.shields.io/npm/l/feishuchannel-for-claudecode)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/lark-for-claude)](https://www.npmjs.com/package/lark-for-claude)
+[![license](https://img.shields.io/npm/l/lark-for-claude)](LICENSE)
 
 [English](./README.md) | **中文**
 
@@ -10,7 +10,7 @@
 基于 MCP Channel 协议，使用 **WebSocket 长连接**——无需公网 HTTPS 端点。
 
 ```bash
-npx feishuchannel-for-claudecode   # 一键安装
+npx lark-for-claude   # 一键安装
 ```
 
 ---
@@ -166,7 +166,7 @@ chat_id → groups[chat_id].workdir → 已注册的 worker（按工作目录匹
 ### 第 2 步：安装插件
 
 ```bash
-npx feishuchannel-for-claudecode
+npx lark-for-claude
 ```
 
 自动完成：克隆仓库 → 安装依赖 → 注册插件 → 创建 `claude-feishu` 快捷方式。
@@ -175,8 +175,8 @@ npx feishuchannel-for-claudecode
 <summary>手动安装</summary>
 
 ```bash
-git clone https://github.com/phxwang/feishuchannel-for-claudecode.git
-cd feishuchannel-for-claudecode
+git clone https://github.com/jbts6/lark-for-claude.git
+cd lark-for-claude
 bun install
 claude plugin marketplace add .
 claude plugin install feishu@feishu-local
@@ -518,7 +518,7 @@ claude --version || (echo "请先安装 Claude Code" && exit 1)
 ### 一键部署
 
 ```bash
-npx feishuchannel-for-claudecode
+npx lark-for-claude
 ```
 
 自动完成：克隆 → 安装 → 注册插件 → 创建 `claude-feishu` 快捷方式。

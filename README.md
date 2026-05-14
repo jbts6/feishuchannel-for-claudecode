@@ -1,7 +1,7 @@
 # Feishu Channel for Claude Code
 
-[![npm version](https://img.shields.io/npm/v/feishuchannel-for-claudecode)](https://www.npmjs.com/package/feishuchannel-for-claudecode)
-[![license](https://img.shields.io/npm/l/feishuchannel-for-claudecode)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/lark-for-claude)](https://www.npmjs.com/package/lark-for-claude)
+[![license](https://img.shields.io/npm/l/lark-for-claude)](LICENSE)
 
 A [Feishu (Lark)](https://www.feishu.cn/) channel plugin for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), built on the **native [Channel interface](https://docs.anthropic.com/en/docs/claude-code/channels)**. Chat with Claude directly in Feishu — DMs, group chats, file sharing, interactive cards.
 
@@ -10,7 +10,7 @@ A [Feishu (Lark)](https://www.feishu.cn/) channel plugin for [Claude Code](https
 Uses the MCP Channel protocol with **WebSocket persistent connection** — no public HTTPS endpoint needed.
 
 ```bash
-npx feishuchannel-for-claudecode   # one-command install
+npx lark-for-claude   # one-command install
 ```
 
 ---
@@ -166,7 +166,7 @@ chat_id → groups[chat_id].workdir → registered worker (by cwd)
 ### Step 2: Install the Plugin
 
 ```bash
-npx feishuchannel-for-claudecode
+npx lark-for-claude
 ```
 
 This clones the repo, installs dependencies, registers the Claude Code plugin, and creates the `claude-feishu` shortcut.
@@ -175,8 +175,8 @@ This clones the repo, installs dependencies, registers the Claude Code plugin, a
 <summary>Manual installation</summary>
 
 ```bash
-git clone https://github.com/phxwang/feishuchannel-for-claudecode.git
-cd feishuchannel-for-claudecode
+git clone https://github.com/jbts6/lark-for-claude.git
+cd lark-for-claude
 bun install
 claude plugin marketplace add .
 claude plugin install feishu@feishu-local
@@ -518,7 +518,7 @@ claude --version || (echo "INSTALL claude-code first" && exit 1)
 ### One-Command Deploy
 
 ```bash
-npx feishuchannel-for-claudecode
+npx lark-for-claude
 ```
 
 This handles: clone → install → plugin register → `claude-feishu` shortcut.
