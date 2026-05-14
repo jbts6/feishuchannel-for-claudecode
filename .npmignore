@@ -3,8 +3,14 @@
 .mcp.json
 .claude/
 .playwright-mcp/
+.git
+.trae
 bun.lock
 node_modules/
 server.test.ts
 tsconfig.json
 biome.json
+prompt.md
+bun.lock
+.env
+*.log
