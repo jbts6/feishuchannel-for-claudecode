@@ -18,6 +18,7 @@ import { join, resolve } from 'path'
 
 import {
   STATE_DIR, ACCESS_FILE, ENV_FILE,
+  IS_WIN32, getSocketPath,
   type Access, type GroupPolicy, type GateResult,
   makeDebugger, loadEnv, requireCredentials,
   readAccess, saveAccess, gate,
@@ -29,7 +30,7 @@ import {
 // ── Config ──────────────────────────────────────────────────────────────────
 
 const DEBUG_LOG = join(STATE_DIR, 'router-debug.log')
-const SOCK_PATH = join(STATE_DIR, 'router.sock')
+const SOCK_PATH = getSocketPath()
 
 const dbg = makeDebugger(DEBUG_LOG, '[router] ')
 
@@ -285,11 +286,11 @@ dbg('router starting')
 mkdirSync(STATE_DIR, { recursive: true })
 botOpenId = await fetchBotOpenId(apiClient, dbg)
 
-if (existsSync(SOCK_PATH)) { try { unlinkSync(SOCK_PATH) } catch (e) { dbg(`failed to unlink stale socket: ${e}`) } }
+if (!IS_WIN32 && existsSync(SOCK_PATH)) { try { unlinkSync(SOCK_PATH) } catch (e) { dbg(`failed to unlink stale socket: ${e}`) } }
 
 sockServer.listen(SOCK_PATH, () => {
-  chmodSync(SOCK_PATH, 0o600)
-  dbg(`unix socket listening: ${SOCK_PATH}`)
+  if (!IS_WIN32) chmodSync(SOCK_PATH, 0o600)
+  dbg(`socket listening: ${SOCK_PATH}`)
 })
 
 const wsClient = new lark.WSClient({ appId: APP_ID, appSecret: APP_SECRET, loggerLevel: lark.LoggerLevel.warn })
@@ -306,7 +307,7 @@ const dispatcher = new lark.EventDispatcher({ encryptKey: ENCRYPT_KEY }).registe
 
 wsClient.start({ eventDispatcher: dispatcher }).catch(e => dbg(`wsClient error: ${e}`))
 
-process.on('SIGUSR1', () => {
+if (!IS_WIN32) process.on('SIGUSR1', () => {
   const lines = [`\n=== Router Status ===`, `workers: ${workers.size}`]
   for (const w of workers.values()) {
     lines.push(`  ${w.workdir}`)
@@ -319,7 +320,7 @@ function shutdown() {
   if (shuttingDown) return; shuttingDown = true
   dbg('shutting down')
   sockServer.close()
-  try { unlinkSync(SOCK_PATH) } catch (e) { dbg(`failed to unlink socket on shutdown: ${e}`) }
+  if (!IS_WIN32) try { unlinkSync(SOCK_PATH) } catch (e) { dbg(`failed to unlink socket on shutdown: ${e}`) }
   try { (wsClient as any).disconnect?.() } catch (e) { dbg(`wsClient disconnect failed: ${e}`) }
   setTimeout(() => process.exit(0), 2000)
 }

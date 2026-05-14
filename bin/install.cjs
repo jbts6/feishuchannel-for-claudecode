@@ -17,21 +17,9 @@ function run(cmd, opts = {}) {
   execSync(cmd, { stdio: 'inherit', ...opts })
 }
 
-function checkBin(cmd, hint) {
-  try {
-    execSync(`which ${cmd}`, { stdio: 'ignore' })
-    return true
-  } catch {
-    console.error(`\x1b[31mError:\x1b[0m ${cmd} not found. ${hint}`)
-    return false
-  }
-}
-
 // ── Prerequisites ──────────────────────────────────────────────────────────
 
 let ok = true
-if (!checkBin('bun', 'Install: https://bun.sh')) ok = false
-if (!checkBin('claude', 'Install: https://docs.anthropic.com/en/docs/claude-code')) ok = false
 if (!ok) process.exit(1)
 
 console.log('\nInstalling Feishu Channel for Claude Code...\n')

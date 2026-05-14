@@ -20,6 +20,7 @@ import { join, extname, basename } from 'path'
 import {
   STATE_DIR, ACCESS_FILE, ENV_FILE, INBOX_DIR, MAX_CHUNK, MAX_FILE,
   IMAGE_EXTS, FEISHU_FTYPES, PERMISSION_REPLY_RE, CONFIRM_CHARS,
+  IS_WIN32, getSocketPath,
   type Access, type PendingEntry, type GroupPolicy, type GateResult,
   makeDebugger, loadEnv, requireCredentials,
   defAccess, readAccess, saveAccess, pruneExpired,
@@ -36,6 +37,25 @@ const dbg = makeDebugger(join(STATE_DIR, 'debug.log'))
 
 function findChannelAncestorPid(): number {
   try {
+    if (IS_WIN32) {
+      let pid = process.ppid
+      for (let depth = 0; depth < 5; depth++) {
+        try {
+          const out = execSync(`wmic process where processid=${pid} get parentprocessid,commandline /value`, { encoding: 'utf8' })
+          let ppid = 0; let cmdline = ''
+          for (const line of out.split('\r\n')) {
+            const tl = line.trim()
+            if (tl.startsWith('ParentProcessId=')) ppid = parseInt(tl.slice('ParentProcessId='.length))
+            else if (tl.startsWith('CommandLine=')) cmdline = tl.slice('CommandLine='.length)
+          }
+          if (!cmdline) break
+          if (/\bchannels?\b/i.test(cmdline) && /\bfeishu\b/i.test(cmdline)) return pid
+          if (ppid <= 0) break
+          pid = ppid
+        } catch { break }
+      }
+      return 0
+    }
     const lines = execSync(
       `ps -o pid=,ppid=,args= -ax`,
       { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 },
@@ -58,8 +78,9 @@ function findChannelAncestorPid(): number {
 }
 
 function getProcessCwd(pid: number): string | undefined {
+  if (IS_WIN32) return undefined
   try {
-    const out = execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null`, { encoding: 'utf8' })
+    const out = execSync(`lsof -a -p ${pid} -d cwd -Fn`, { encoding: 'utf8' })
     const m = out.match(/^n(.+)$/m)
     if (m) return m[1]
   } catch (e) { dbg(`getProcessCwd lsof failed for pid ${pid}: ${e}`) }
@@ -73,7 +94,7 @@ const CHANNEL_ANCESTOR_PID = findChannelAncestorPid()
 const CHANNEL_MODE = CHANNEL_ANCESTOR_PID > 0
 const CLAUDE_WORKDIR = CHANNEL_MODE ? getProcessCwd(CHANNEL_ANCESTOR_PID) : undefined
 
-const ROUTER_SOCK = join(STATE_DIR, 'router.sock')
+const ROUTER_SOCK = getSocketPath()
 const PLUGIN_DIR = import.meta.dir
 const APPROVED_DIR = join(STATE_DIR, 'approved')
 const DEBUG_LOG = join(STATE_DIR, 'debug.log')
@@ -81,7 +102,7 @@ const DEBUG_LOG = join(STATE_DIR, 'debug.log')
 // ── Router auto-spawn ────────────────────────────────────────────────────────
 
 function ensureRouter(): boolean {
-  if (existsSync(ROUTER_SOCK)) return true
+  if (!IS_WIN32 && existsSync(ROUTER_SOCK)) return true
   const routerScript = join(PLUGIN_DIR, 'router.ts')
   if (!existsSync(routerScript)) { dbg(`router.ts not found at ${routerScript}`); return false }
   dbg(`spawning router: bun ${routerScript}`)
@@ -98,13 +119,21 @@ function ensureRouter(): boolean {
 async function waitForSocket(timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (existsSync(ROUTER_SOCK)) return true
+    if (IS_WIN32) {
+      const ok = await new Promise<boolean>(resolve => {
+        const sock = netConnect(ROUTER_SOCK, () => { sock.destroy(); resolve(true) })
+        sock.on('error', () => resolve(false))
+      })
+      if (ok) return true
+    } else {
+      if (existsSync(ROUTER_SOCK)) return true
+    }
     await new Promise(r => setTimeout(r, 200))
   }
   return false
 }
 
-let WORKER_MODE = CHANNEL_MODE && existsSync(ROUTER_SOCK)
+let WORKER_MODE = CHANNEL_MODE && (IS_WIN32 ? false : existsSync(ROUTER_SOCK))
 
 // ── Env & credentials ────────────────────────────────────────────────────────
 
@@ -698,7 +727,7 @@ let transcriptOffset = 0
 let transcriptBuf = ''
 
 function projectDirForCwd(cwd: string): string {
-  return join(require('os').homedir(), '.claude', 'projects', cwd.replace(/\//g, '-'))
+  return join(require('os').homedir(), '.claude', 'projects', cwd.replace(/[/\\]/g, '-'))
 }
 
 function findLatestTranscript(projectDir: string): string | null {
@@ -899,9 +928,14 @@ setInterval(() => {
 }, 2000).unref()
 
 if (initialPpid > 1) {
-  spawn('bash', ['-c',
-    `while kill -0 ${initialPpid} 2>/dev/null && kill -0 ${process.pid} 2>/dev/null; do sleep 5; done; kill -9 ${process.pid} 2>/dev/null`,
-  ], { detached: true, stdio: 'ignore' }).unref()
+  if (IS_WIN32) {
+    const script = `while(1){Start-Sleep -Seconds 5;$pp=Get-Process -Id ${initialPpid} -ErrorAction SilentlyContinue;$sp=Get-Process -Id ${process.pid} -ErrorAction SilentlyContinue;if(-not $pp -or -not $sp){try{Stop-Process -Id ${process.pid} -Force -ErrorAction SilentlyContinue}catch{};break}}`
+    spawn('powershell', ['-NoProfile', '-Command', script], { detached: true, stdio: 'ignore' }).unref()
+  } else {
+    spawn('bash', ['-c',
+      `while kill -0 ${initialPpid} 2>/dev/null && kill -0 ${process.pid} 2>/dev/null; do sleep 5; done; kill -9 ${process.pid} 2>/dev/null`,
+    ], { detached: true, stdio: 'ignore' }).unref()
+  }
 }
 
 await mcpPromise

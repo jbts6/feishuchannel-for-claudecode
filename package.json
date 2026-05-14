@@ -16,7 +16,7 @@
     "format": "biome format --write .",
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun run lint && bun test",
-    "postinstall": "node -e \"const{mkdirSync,writeFileSync,existsSync}=require('fs');const{join}=require('path');const d=join(require('os').homedir(),'.local','bin');const t=join(d,'claude-feishu');try{mkdirSync(d,{recursive:true});if(!existsSync(t)){writeFileSync(t,process.cwd()+'/bin/claude-feishu')}}catch{}\""
+    "postinstall": "node bin/postinstall.cjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

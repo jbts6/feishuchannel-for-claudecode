@@ -16,6 +16,6 @@
     "allowImportingTsExtensions": true,
     "types": ["bun"]
   },
-  "include": ["*.ts", "bin/*.js"],
+  "include": ["*.ts", "bin/*.js", "bin/install.cjs"],
   "exclude": ["node_modules"]
 }

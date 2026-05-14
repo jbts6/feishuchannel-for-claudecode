@@ -29,6 +29,16 @@ export const FEISHU_FTYPES: Record<string, string> = {
 export const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 export const CONFIRM_CHARS = 'abcdefghijkmnopqrstuvwxyz'
 
+// ── Platform helpers ───────────────────────────────────────────────────────────
+
+export const IS_WIN32 = process.platform === 'win32'
+
+export function getSocketPath(): string {
+  return IS_WIN32
+    ? '\\\\.\\pipe\\feishu-router'
+    : join(STATE_DIR, 'router.sock')
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export type PendingEntry = {
