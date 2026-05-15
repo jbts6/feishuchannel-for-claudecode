@@ -41,7 +41,8 @@ function findChannelAncestorPid(): number {
       for (let depth = 0; depth < 5; depth++) {
         try {
           const out = execSync(`wmic process where processid=${pid} get parentprocessid,commandline /value`, { encoding: 'utf8' })
-          let ppid = 0; let cmdline = ''
+          let ppid = 0
+          let cmdline = ''
           for (const line of out.split('\r\n')) {
             const tl = line.trim()
             if (tl.startsWith('ParentProcessId=')) ppid = parseInt(tl.slice('ParentProcessId='.length))
@@ -62,7 +63,7 @@ function findChannelAncestorPid(): number {
     const byPid = new Map<number, { ppid: number; args: string }>()
     for (const line of lines) {
       const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)
-      if (m) byPid.set(Number(m[1]), { ppid: Number(m[2]), args: m[3] })
+      if (m) byPid.set(Number(m[1]), { ppid: Number(m[2]), args: m[3] ?? '' })
     }
     let pid = process.ppid
     for (let depth = 0; depth < 5; depth++) {
@@ -418,7 +419,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   try {
     switch (req.params.name) {
       case 'reply': {
-        let chatId = a.chat_id as string; const text = a.text as string
+        let chatId = a.chat_id as string
+        const text = a.text as string
         const replyTo = a.reply_to as string | undefined
         const access = loadAccess()
         if (!chatId) chatId = resolveChatId(CLAUDE_WORKDIR, access) ?? ''
@@ -431,7 +433,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           let r: any
           if (replyTo && i === 0) r = await (apiClient as any).im.message.reply({ path: { message_id: replyTo }, data: { msg_type: 'text', content: JSON.stringify({ text: chunks[i] }), reply_in_thread: false } })
           else r = await apiClient.im.message.create({ params: { receive_id_type: 'chat_id' }, data: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text: chunks[i] }) } })
-          const id = r?.message_id ?? r?.data?.message_id ?? ''; if (id) ids.push(id)
+          const id = r?.message_id ?? r?.data?.message_id ?? ''
+          if (id) ids.push(id)
         }
         return { content: [{ type: 'text', text: ids.length === 1 ? `sent (id: ${ids[0]})` : `sent ${ids.length} messages (ids: ${ids.join(', ')})` }] }
       }

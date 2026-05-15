@@ -54,7 +54,8 @@ function handleAuth(a: string[]) {
     return
   }
   if (a[0] === 'key') {
-    const key = a[1]; const val = a[2]
+    const key = a[1]
+    const val = a[2]
     if (!key || !val) { console.error('Usage: claude-feishu auth key <key> <value>'); process.exit(1) }
     let content = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, 'utf8') : ''
     const re = new RegExp(`^${key}=.*$`, 'm')
@@ -131,7 +132,8 @@ function showAccessFull() {
 }
 
 function handleAccess(a: string[]) {
-  const sub = a[0]; const rest = a.slice(1)
+  const sub = a[0]
+  const rest = a.slice(1)
   if (!sub || sub === 'status') { showAccessFull(); return }
 
   if (sub === 'pair') {
@@ -198,7 +200,8 @@ function handleAccess(a: string[]) {
   }
 
   if (sub === 'group') {
-    const action = rest[0]; const chatId = rest[1]
+    const action = rest[0]
+    const chatId = rest[1]
     if (!action || !chatId) {
       console.error('Usage: claude-feishu access group add|rm <chatId> [--no-mention] [--allow ids] [--workdir <path>]')
       process.exit(1)
@@ -225,7 +228,8 @@ function handleAccess(a: string[]) {
   }
 
   if (sub === 'set') {
-    const key = rest[0]; const val = rest.slice(1).join(' ')
+    const key = rest[0]
+    const val = rest.slice(1).join(' ')
     if (!key || !val) { console.error('Usage: claude-feishu access set <key> <value>'); process.exit(1) }
     const ac = readAccess(ACCESS_FILE, () => {})
     if (key === 'ackReaction') ac.ackReaction = val

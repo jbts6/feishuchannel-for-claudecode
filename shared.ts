@@ -77,7 +77,7 @@ export function loadEnv(envFile: string) {
     for (const line of readFileSync(envFile, 'utf8').split('\n')) {
       if (line.startsWith('#')) continue
       const m = line.match(/^(\w+)=(.*)$/)
-      if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2]
+      if (m && m[1] !== undefined && process.env[m[1]] === undefined) process.env[m[1]] = m[2] ?? ''
     }
   } catch (e) {
     const err = e as NodeJS.ErrnoException
@@ -339,7 +339,11 @@ export class AccessCache {
   get(accessFile: string, dbg: (msg: string) => void): Access {
     try {
       const stat = { mtimeMs: 0 }
-      try { const fs = require('fs'); const s = fs.statSync(accessFile); stat.mtimeMs = s.mtimeMs } catch {}
+      try {
+        const fs = require('fs')
+        const s = fs.statSync(accessFile)
+        stat.mtimeMs = s.mtimeMs
+      } catch {}
       if (this.cached && stat.mtimeMs === this.mtimeMs) return this.cached
       this.cached = readAccess(accessFile, dbg)
       this.mtimeMs = stat.mtimeMs

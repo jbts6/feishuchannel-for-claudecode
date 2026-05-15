@@ -237,7 +237,8 @@ async function handleCardAction(data: any): Promise<Record<string, unknown>> {
   if (!code || !action) return {}
 
   const chatId = data?.open_chat_id ?? ''
-  const workdir = chatId ? resolveWorkdir(chatId, 'group') ?? resolveWorkdir(chatId, 'p2p') : undefined
+  const access = loadRouterAccess()
+  const workdir = chatId ? resolveWorkdir(chatId, 'group', access) ?? resolveWorkdir(chatId, 'p2p', access) : undefined
 
   if (action === 'perm_allow' || action === 'perm_allow_always' || action === 'perm_deny') {
     const behavior = action === 'perm_deny' ? 'deny' : action === 'perm_allow_always' ? 'allow-always' : 'allow'
