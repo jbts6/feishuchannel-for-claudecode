@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'bun:test'
 
 import {
-  chunkText, checkMention, assertAllowedChat, genConfirmCode, gate,
+  chunkText, checkMention, assertAllowedChat, resolveChatId, genConfirmCode, gate,
   readAccess, defAccess, pruneExpired, parseMessageContent,
   buildAttachmentInfo, formatTimestamp,
   PERMISSION_REPLY_RE, CONFIRM_CHARS,
@@ -419,5 +419,58 @@ describe('AccessCache', () => {
     cache.get('/nonexistent/path/access.json', noop)
     cache.invalidate()
     expect((cache as any).cached).toBeNull()
+  })
+})
+
+// ---------- resolveChatId ----------
+
+describe('resolveChatId', () => {
+  test('matches workdir to group chat_id', () => {
+    const orig = process.env.FEISHU_APP_CHAT_ID
+    delete process.env.FEISHU_APP_CHAT_ID
+    const access: Access = {
+      ...defAccess(),
+      groups: { oc_groupA: { requireMention: true, allowFrom: [], workdir: '/path/to/project-a' } },
+    }
+    expect(resolveChatId('/path/to/project-a', access)).toBe('oc_groupA')
+    if (orig !== undefined) process.env.FEISHU_APP_CHAT_ID = orig
+  })
+
+  test('falls back to FEISHU_APP_CHAT_ID when no workdir match', () => {
+    const orig = process.env.FEISHU_APP_CHAT_ID
+    process.env.FEISHU_APP_CHAT_ID = 'oc_fallback'
+    const access: Access = { ...defAccess(), groups: {} }
+    expect(resolveChatId('/some/unknown/path', access)).toBe('oc_fallback')
+    if (orig !== undefined) process.env.FEISHU_APP_CHAT_ID = orig
+    else delete process.env.FEISHU_APP_CHAT_ID
+  })
+
+  test('falls back to FEISHU_APP_CHAT_ID when workdir is undefined', () => {
+    const orig = process.env.FEISHU_APP_CHAT_ID
+    process.env.FEISHU_APP_CHAT_ID = 'oc_fallback'
+    const access: Access = { ...defAccess(), groups: {} }
+    expect(resolveChatId(undefined, access)).toBe('oc_fallback')
+    if (orig !== undefined) process.env.FEISHU_APP_CHAT_ID = orig
+    else delete process.env.FEISHU_APP_CHAT_ID
+  })
+
+  test('returns undefined when no match and no FEISHU_APP_CHAT_ID', () => {
+    const orig = process.env.FEISHU_APP_CHAT_ID
+    delete process.env.FEISHU_APP_CHAT_ID
+    const access: Access = { ...defAccess(), groups: {} }
+    expect(resolveChatId('/some/path', access)).toBeUndefined()
+    if (orig !== undefined) process.env.FEISHU_APP_CHAT_ID = orig
+  })
+
+  test('prefers workdir match over FEISHU_APP_CHAT_ID', () => {
+    const orig = process.env.FEISHU_APP_CHAT_ID
+    process.env.FEISHU_APP_CHAT_ID = 'oc_fallback'
+    const access: Access = {
+      ...defAccess(),
+      groups: { oc_groupA: { requireMention: true, allowFrom: [], workdir: '/path/to/project-a' } },
+    }
+    expect(resolveChatId('/path/to/project-a', access)).toBe('oc_groupA')
+    if (orig !== undefined) process.env.FEISHU_APP_CHAT_ID = orig
+    else delete process.env.FEISHU_APP_CHAT_ID
   })
 })

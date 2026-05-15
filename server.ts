@@ -23,7 +23,7 @@ import {
   type Access, type GateResult,
   makeDebugger, loadEnv, requireCredentials,
   readAccess, saveAccess,
-  assertAllowedChat, gate,
+  assertAllowedChat, resolveChatId, gate,
   genConfirmCode, chunkText, checkMention,
   fetchBotOpenId, fetchParentQuote,
   parseMessageContent, buildAttachmentInfo, formatTimestamp,
@@ -216,6 +216,8 @@ const mcp = new Server(
 
         Every reply MUST appear in both terminal (print) and Feishu (reply tool). Print first, then reply. No exceptions — progress updates, clarifications, and errors must also be dual-sent.
 
+        When no chat_id is available (e.g., terminal-initiated output), it is auto-resolved: first by matching the current workdir against access.json groups, then falling back to FEISHU_APP_CHAT_ID from .env.
+
         ---
 
         ## Progress Updates
@@ -384,9 +386,9 @@ mcp.setNotificationHandler(
 // ── Tool definitions ─────────────────────────────────────────────────────────
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [
-  { name: 'reply', description: 'Send a message to a Feishu chat. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) to quote-reply.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, text: { type: 'string' }, reply_to: { type: 'string', description: 'Message ID to quote-reply.' } }, required: ['chat_id', 'text'] } },
-  { name: 'edit_message', description: "Edit a text message the bot sent. Edits don't push notifications — send a new reply when a long task completes.", inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, message_id: { type: 'string' }, text: { type: 'string' } }, required: ['chat_id', 'message_id', 'text'] } },
-  { name: 'send_confirm_card', description: 'Send an interactive card with ✅ Confirm and ❌ Cancel buttons to ask the user before taking a risky or irreversible action. When the user responds, a "CONFIRMED <code>" or "CANCELLED <code>" message arrives in this session. Wait for it before proceeding.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string' }, content: { type: 'string', description: 'Action description shown in the card (supports lark_md markdown).' }, title: { type: 'string', description: 'Card title. Default: "⚡ 操作确认"' } }, required: ['chat_id', 'content'] } },
+  { name: 'reply', description: 'Send a message to a Feishu chat. Pass chat_id from the inbound message. If omitted, resolves from workdir or FEISHU_APP_CHAT_ID. Optionally pass reply_to (message_id) to quote-reply.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string', description: 'Target chat ID. Auto-resolved if omitted.' }, text: { type: 'string' }, reply_to: { type: 'string', description: 'Message ID to quote-reply.' } }, required: ['text'] } },
+  { name: 'edit_message', description: "Edit a text message the bot sent. Edits don't push notifications — send a new reply when a long task completes.", inputSchema: { type: 'object', properties: { chat_id: { type: 'string', description: 'Target chat ID. Auto-resolved if omitted.' }, message_id: { type: 'string' }, text: { type: 'string' } }, required: ['message_id', 'text'] } },
+  { name: 'send_confirm_card', description: 'Send an interactive card with ✅ Confirm and ❌ Cancel buttons to ask the user before taking a risky or irreversible action. When the user responds, a "CONFIRMED <code>" or "CANCELLED <code>" message arrives in this session. Wait for it before proceeding.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string', description: 'Target chat ID. Auto-resolved if omitted.' }, content: { type: 'string', description: 'Action description shown in the card (supports lark_md markdown).' }, title: { type: 'string', description: 'Card title. Default: "⚡ 操作确认"' } }, required: ['content'] } },
 ] }))
 
 // ── Tool handler ─────────────────────────────────────────────────────────────
@@ -396,9 +398,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   try {
     switch (req.params.name) {
       case 'reply': {
-        const chatId = a.chat_id as string, text = a.text as string
+        let chatId = a.chat_id as string; const text = a.text as string
         const replyTo = a.reply_to as string | undefined
         const access = loadAccess()
+        if (!chatId) chatId = resolveChatId(CLAUDE_WORKDIR, access) ?? ''
+        if (!chatId) throw new Error('chat_id required — no inbound message and no fallback chat configured')
         assertAllowedChat(chatId, access)
         const limit = Math.min(access.textChunkLimit ?? MAX_CHUNK, MAX_CHUNK)
         const chunks = chunkText(text, limit)
@@ -413,20 +417,27 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       }
       
       case 'edit_message': {
-        assertAllowedChat(a.chat_id as string, loadAccess())
+        let editChatId = a.chat_id as string
+        const editAccess = loadAccess()
+        if (!editChatId) editChatId = resolveChatId(CLAUDE_WORKDIR, editAccess) ?? ''
+        if (!editChatId) throw new Error('chat_id required — no inbound message and no fallback chat configured')
+        assertAllowedChat(editChatId, editAccess)
         await (apiClient as any).im.message.update({ path: { message_id: a.message_id as string }, data: { msg_type: 'text', content: JSON.stringify({ text: a.text as string }) } })
         return { content: [{ type: 'text', text: `edited (id: ${a.message_id})` }] }
       }
      
       case 'send_confirm_card': {
-        const chatId = a.chat_id as string
+        let confirmChatId = a.chat_id as string
         const content = a.content as string
         const title = (a.title as string | undefined) ?? '⚡ 操作确认'
-        assertAllowedChat(chatId, loadAccess())
+        const confirmAccess = loadAccess()
+        if (!confirmChatId) confirmChatId = resolveChatId(CLAUDE_WORKDIR, confirmAccess) ?? ''
+        if (!confirmChatId) throw new Error('chat_id required — no inbound message and no fallback chat configured')
+        assertAllowedChat(confirmChatId, confirmAccess)
         const code = genConfirmCode()
-        pendingConfirms.set(code, { chatId, senderId: '', title, content })
+        pendingConfirms.set(code, { chatId: confirmChatId, senderId: '', title, content })
         const card = buildConfirmCard(title, content, code)
-        const r = await apiClient.im.message.create({ params: { receive_id_type: 'chat_id' }, data: { receive_id: chatId, msg_type: 'interactive', content: card } })
+        const r = await apiClient.im.message.create({ params: { receive_id_type: 'chat_id' }, data: { receive_id: confirmChatId, msg_type: 'interactive', content: card } })
         const msgId = (r as any)?.message_id ?? (r as any)?.data?.message_id ?? ''
         return { content: [{ type: 'text', text: `confirm card sent (code: ${code}, id: ${msgId}) — waiting for CONFIRMED ${code} or CANCELLED ${code}` }] }
       }

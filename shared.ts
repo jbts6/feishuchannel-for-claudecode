@@ -6,10 +6,10 @@
 import * as lark from '@larksuiteoapi/node-sdk'
 import { randomBytes } from 'crypto'
 import {
-  readFileSync, writeFileSync, appendFileSync, mkdirSync, renameSync, chmodSync,
+  readFileSync, writeFileSync, appendFileSync, mkdirSync, renameSync, chmodSync, realpathSync,
 } from 'fs'
 import { homedir } from 'os'
-import { join } from 'path'
+import { join, sep } from 'path'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -150,6 +150,22 @@ export function assertAllowedChat(chatId: string, a: Access) {
   if (a.allowFrom.includes(chatId)) return
   if (chatId in a.groups) return
   throw new Error(`chat ${chatId} is not allowlisted — add via claude-feishu access`)
+}
+
+export function resolveChatId(workdir: string | undefined, access: Access): string | undefined {
+  const cwd = workdir ? normalizePath(workdir) : undefined
+  if (cwd) {
+    for (const [chatId, policy] of Object.entries(access.groups)) {
+      if (policy.workdir && normalizePath(policy.workdir) === cwd) return chatId
+    }
+  }
+  return process.env.FEISHU_APP_CHAT_ID || undefined
+}
+
+function normalizePath(p: string): string {
+  try { p = realpathSync(p) } catch {}
+  if (p.length > 3 && (p.endsWith('/') || p.endsWith('\\'))) p = p.slice(0, -1)
+  return process.platform === 'win32' ? p.toLowerCase() : p
 }
 
 // ── Confirm code generation ──────────────────────────────────────────────────

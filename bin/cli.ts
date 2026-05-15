@@ -18,7 +18,7 @@ const args = process.argv.slice(3)
 
 function usage() {
   console.log(`Usage:
-  claude-feishu auth [<appId> <appSecret>|key <k> <v>|clear]
+  claude-feishu auth [<appId> <appSecret>|key <k> <v>|chat-id <chat_id>|clear]
   claude-feishu access [status|pair <code>|deny <code>|allow <id>|remove <id>|policy <mode>|group add/rm <chatId> [--no-mention] [--allow ids] [--workdir <path>]|set <k> <v>]`)
 }
 
@@ -30,11 +30,13 @@ function handleAuth(a: string[]) {
     const appId = content.match(/^FEISHU_APP_ID=(.+)$/m)?.[1]
     const appSecret = content.match(/^FEISHU_APP_SECRET=(.+)$/m)?.[1]
     const encryptKey = content.match(/^FEISHU_ENCRYPT_KEY=(.+)$/m)?.[1]
+    const appChatId = content.match(/^FEISHU_APP_CHAT_ID=(.+)$/m)?.[1]
     console.log('')
     if (appId) {
       console.log(`  App ID:       ${appId}`)
       console.log(`  App Secret:   ${appSecret ? appSecret.slice(0, 4) + '****' : '(not set)'}`)
       if (encryptKey) console.log(`  Encrypt Key:  ${encryptKey.slice(0, 4)}****`)
+      console.log(`  App Chat ID:  ${appChatId ?? '(not set)'}`)
     } else {
       console.log('  Credentials:  NOT CONFIGURED')
       console.log('  Run: claude-feishu auth <app_id> <app_secret>\n')
@@ -61,6 +63,18 @@ function handleAuth(a: string[]) {
     mkdirSync(STATE_DIR, { recursive: true })
     writeFileSync(ENV_FILE, content)
     console.log(`Set ${key}`)
+    return
+  }
+  if (a[0] === 'chat-id') {
+    const chatId = a[1]
+    if (!chatId) { console.error('Usage: claude-feishu auth chat-id <chat_id>'); process.exit(1) }
+    let content = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, 'utf8') : ''
+    const re = /^FEISHU_APP_CHAT_ID=.*$/m
+    if (re.test(content)) content = content.replace(re, `FEISHU_APP_CHAT_ID=${chatId}`)
+    else content += `FEISHU_APP_CHAT_ID=${chatId}\n`
+    mkdirSync(STATE_DIR, { recursive: true })
+    writeFileSync(ENV_FILE, content)
+    console.log(`Set FEISHU_APP_CHAT_ID=${chatId}`)
     return
   }
   if (a[0] === 'clear') {
