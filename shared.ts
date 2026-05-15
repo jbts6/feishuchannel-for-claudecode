@@ -37,14 +37,6 @@ export function getSocketPath(): string {
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type PendingEntry = {
-  senderId: string
-  chatId: string
-  createdAt: number
-  expiresAt: number
-  replies: number
-}
-
 export type GroupPolicy = {
   requireMention: boolean
   allowFrom: string[]
@@ -52,11 +44,10 @@ export type GroupPolicy = {
 }
 
 export type Access = {
-  dmPolicy: 'pairing' | 'allowlist' | 'disabled'
+  dmPolicy: 'allowlist' | 'disabled'
   allowFrom: string[]
   p2pChats: Record<string, string>
   groups: Record<string, GroupPolicy>
-  pending: Record<string, PendingEntry>
   mentionPatterns?: string[]
   ackReaction?: string
   textChunkLimit?: number
@@ -152,18 +143,17 @@ export function requireCredentials() {
 // ── Access control ───────────────────────────────────────────────────────────
 
 export function defAccess(): Access {
-  return { dmPolicy: 'pairing', allowFrom: [], p2pChats: {}, groups: {}, pending: {}, ackReaction: 'Get' }
+  return { dmPolicy: 'allowlist', allowFrom: [], p2pChats: {}, groups: {}, ackReaction: 'Get' }
 }
 
 export function readAccess(accessFile: string, dbg: (msg: string) => void): Access {
   try {
     const p = JSON.parse(readFileSync(accessFile, 'utf8')) as Partial<Access>
     return {
-      dmPolicy: p.dmPolicy ?? 'pairing',
+      dmPolicy: p.dmPolicy ?? 'allowlist',
       allowFrom: p.allowFrom ?? [],
       p2pChats: p.p2pChats ?? {},
       groups: p.groups ?? {},
-      pending: p.pending ?? {},
       mentionPatterns: p.mentionPatterns,
       ackReaction: p.ackReaction ?? 'Get',
       textChunkLimit: p.textChunkLimit,
@@ -184,15 +174,6 @@ export function saveAccess(a: Access, accessFile: string, stateDir: string, stat
   const tmp = accessFile + '.tmp'
   writeFileSync(tmp, JSON.stringify(a, null, 2) + '\n', { mode: 0o600 })
   renameSync(tmp, accessFile)
-}
-
-export function pruneExpired(a: Access): boolean {
-  const now = Date.now()
-  let changed = false
-  for (const [k, p] of Object.entries(a.pending)) {
-    if (p.expiresAt < now) { delete a.pending[k]; changed = true }
-  }
-  return changed
 }
 
 export function assertAllowedChat(chatId: string, a: Access) {
@@ -233,37 +214,22 @@ export function genConfirmCode(): string {
   return Array.from(bytes).map(b => CONFIRM_CHARS[b % CONFIRM_CHARS.length]).join('')
 }
 
-// ── Gate (DM pairing / group access) ─────────────────────────────────────────
+// ── Gate (DM / group access) ─────────────────────────────────────────────────
 
 export type GateResult =
   | { action: 'deliver'; access: Access }
   | { action: 'drop' }
-  | { action: 'pair'; code: string; isResend: boolean }
 
 export function gate(
   senderId: string, chatId: string, chatType: string, mentioned: boolean,
-  loadAccess: () => Access, saveAccessFn: (a: Access) => void,
+  loadAccess: () => Access, _saveAccessFn: (a: Access) => void,
 ): GateResult {
   const a = loadAccess()
-  if (pruneExpired(a)) saveAccessFn(a)
   if (a.dmPolicy === 'disabled') return { action: 'drop' }
 
   if (chatType === 'p2p') {
     if (a.allowFrom.includes(senderId)) return { action: 'deliver', access: a }
-    if (a.dmPolicy === 'allowlist') return { action: 'drop' }
-    for (const [code, p] of Object.entries(a.pending)) {
-      if (p.senderId === senderId) {
-        if ((p.replies ?? 1) >= 2) return { action: 'drop' }
-        p.replies = (p.replies ?? 1) + 1; saveAccessFn(a)
-        return { action: 'pair', code, isResend: true }
-      }
-    }
-    if (Object.keys(a.pending).length >= 3) return { action: 'drop' }
-    const code = genConfirmCode()
-    const now = Date.now()
-    a.pending[code] = { senderId, chatId, createdAt: now, expiresAt: now + 3600000, replies: 1 }
-    saveAccessFn(a)
-    return { action: 'pair', code, isResend: false }
+    return { action: 'drop' }
   }
 
   const policy = a.groups[chatId]

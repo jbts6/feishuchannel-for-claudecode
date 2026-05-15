@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * Feishu (Lark) channel for Claude Code.
- * MCP server with access control: pairing, allowlists, group mention-triggering.
+ * MCP server with access control: allowlists, group mention-triggering.
  * State: ~/.claude/channels/feishu/access.json  Managed by: claude-feishu access CLI.
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
@@ -105,7 +105,6 @@ const CLAUDE_WORKDIR = CHANNEL_MODE ? getProcessCwd(CHANNEL_ANCESTOR_PID) : unde
 
 const ROUTER_SOCK = getSocketPath()
 const PLUGIN_DIR = import.meta.dir
-const APPROVED_DIR = join(STATE_DIR, 'approved')
 
 // ── Router auto-spawn ────────────────────────────────────────────────────────
 
@@ -169,12 +168,7 @@ process.on('uncaughtException', err => {
 
 const accessCache = new AccessCache(2000)
 
-const BOOT = STATIC ? (() => {
-  const a = readAccess(ACCESS_FILE, dbg)
-  if (a.dmPolicy === 'pairing') { process.stderr.write('feishu: static mode — pairing downgraded to allowlist\n'); a.dmPolicy = 'allowlist' }
-  a.pending = {}
-  return a
-})() : null
+const BOOT = STATIC ? readAccess(ACCESS_FILE, dbg) : null
 
 const loadAccess = () => BOOT ?? accessCache.get(ACCESS_FILE, dbg)
 
@@ -185,30 +179,6 @@ function saveAccessCached(a: Access) {
 
 const gateFn = (senderId: string, chatId: string, chatType: string, mentioned: boolean): GateResult =>
   gate(senderId, chatId, chatType, mentioned, loadAccess, saveAccessCached)
-
-// ── Approval polling ─────────────────────────────────────────────────────────
-
-function checkApprovals() {
-  if (!existsSync(APPROVED_DIR)) return
-  let files: string[]
-  try { files = readdirSync(APPROVED_DIR) } catch (e) { dbg(`checkApprovals readdir failed: ${e}`); return }
-  if (!files.length) return
-  for (const openId of files) {
-    const file = join(APPROVED_DIR, openId)
-    let chatId: string
-    try { chatId = readFileSync(file, 'utf8').trim() } catch (e) { dbg(`checkApprovals read failed for ${openId}: ${e}`); rmSync(file, { force: true }); continue }
-    if (!chatId) { rmSync(file, { force: true }); continue }
-    void (async () => {
-      try {
-        const a = loadAccess()
-        if (!a.p2pChats[chatId]) { a.p2pChats[chatId] = openId; saveAccessCached(a) }
-        await apiClient.im.message.create({ params: { receive_id_type: 'chat_id' }, data: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text: 'Paired! Say hi to Claude.' }) } })
-        rmSync(file, { force: true })
-      } catch (e) { process.stderr.write(`feishu: approval confirm failed: ${e}\n`); dbg(`approval confirm failed: ${e}`); rmSync(file, { force: true }) }
-    })()
-  }
-}
-if (!STATIC && CHANNEL_MODE) setInterval(checkApprovals, 5000).unref()
 
 // ── MCP Server ───────────────────────────────────────────────────────────────
 
@@ -584,14 +554,6 @@ async function handleInbound(data: any) {
   const result = gateFn(senderId, chatId, chatType, mentioned)
   dbg(`gate result: ${result.action}, senderId=${senderId}, chatId=${chatId}, chatType=${chatType}, mentioned=${mentioned}`)
   if (result.action === 'drop') return
-
-  if (result.action === 'pair') {
-    const lead = result.isResend ? 'Still pending' : 'Pairing required'
-    try {
-      await (apiClient as any).im.message.reply({ path: { message_id: messageId }, data: { msg_type: 'text', content: JSON.stringify({ text: `${lead} — run:\n\nclaude-feishu access pair ${result.code}` }), reply_in_thread: false } })
-    } catch (e) { process.stderr.write(`feishu: pairing reply failed: ${e}\n`); dbg(`pairing reply failed: ${e}`) }
-    return
-  }
 
   const pm = PERMISSION_REPLY_RE.exec(text)
   if (pm) {

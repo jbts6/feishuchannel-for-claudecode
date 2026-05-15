@@ -180,21 +180,10 @@ async function handleInbound(data: any) {
 
   if (result.action === 'drop') return
 
-  if (result.action === 'pair') {
-    const lead = result.isResend ? 'Still pending' : 'Pairing required'
-    try {
-      await (apiClient as any).im.message.reply({
-        path: { message_id: messageId },
-        data: { msg_type: 'text', content: JSON.stringify({ text: `${lead} — run:\n\nclaude-feishu access pair ${result.code}` }), reply_in_thread: false },
-      })
-    } catch (e) { dbg(`pairing reply failed: ${e}`) }
-    return
-  }
-
-  if (access.ackReaction) {
+  if (result.access.ackReaction) {
     void (apiClient as any).im.messageReaction.create({
       path: { message_id: messageId },
-      data: { reaction_type: { emoji_type: access.ackReaction } },
+      data: { reaction_type: { emoji_type: result.access.ackReaction } },
     }).catch((e: unknown) => dbg(`ack reaction failed: ${e}`))
   }
 

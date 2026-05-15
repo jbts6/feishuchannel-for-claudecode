@@ -12,14 +12,13 @@ import {
   type Access,
 } from '../shared.ts'
 
-const APPROVED_DIR = join(STATE_DIR, 'approved')
 const cmd = process.argv[2]
 const args = process.argv.slice(3)
 
 function usage() {
   console.log(`Usage:
   claude-feishu auth [<appId> <appSecret>|key <k> <v>|chat-id <chat_id>|clear]
-  claude-feishu access [status|pair <code>|deny <code>|allow <id>|remove <id>|policy <mode>|group add/rm <chatId> [--no-mention] [--allow ids] [--workdir <path>]|set <k> <v>]`)
+  claude-feishu access [status|allow <id>|remove <id>|policy <mode>|group add/rm <chatId> [--no-mention] [--allow ids] [--workdir <path>]|set <k> <v>]`)
 }
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
@@ -49,12 +48,7 @@ function handleAuth(a: string[]) {
     const ac = readAccess(ACCESS_FILE, () => {})
     console.log(`  DM Policy:    ${ac.dmPolicy}`)
     console.log(`  Allowlist:    ${ac.allowFrom.length} user(s)`)
-    console.log(`  Pending:      ${Object.keys(ac.pending).length} code(s)`)
     console.log(`  Groups:       ${Object.keys(ac.groups).length} chat(s)`)
-    for (const [code, p] of Object.entries(ac.pending)) {
-      const age = Math.round((Date.now() - p.createdAt) / 60000)
-      console.log(`    ${code}  —  ${p.senderId}  —  ${age}m ago`)
-    }
     return
   }
   if (a[0] === 'key') {
@@ -118,15 +112,6 @@ function showAccessFull() {
     console.log(`    ${id}${chat ? `  (chat: ${chat[0]})` : ''}`)
   }
 
-  const pendings = Object.entries(ac.pending)
-  if (pendings.length) {
-    console.log(`\n  Pending pairings (${pendings.length}):`)
-    for (const [code, p] of pendings) {
-      const age = Math.round((Date.now() - p.createdAt) / 60000)
-      console.log(`    ${code}  —  ${p.senderId}  —  ${age}m ago  —  replies: ${p.replies}`)
-    }
-  }
-
   const groups = Object.entries(ac.groups)
   if (groups.length) {
     console.log(`\n  Groups (${groups.length}):`)
@@ -143,32 +128,6 @@ function handleAccess(a: string[]) {
   const sub = a[0]
   const rest = a.slice(1)
   if (!sub || sub === 'status') { showAccessFull(); return }
-
-  if (sub === 'pair') {
-    const code = rest[0]
-    if (!code) { console.error('Usage: claude-feishu access pair <code>'); process.exit(1) }
-    const ac = readAccess(ACCESS_FILE, () => {})
-    const pending = ac.pending[code]
-    if (!pending) { console.error(`Invalid code: ${code}`); process.exit(1) }
-    if (!ac.allowFrom.includes(pending.senderId)) ac.allowFrom.push(pending.senderId)
-    mkdirSync(APPROVED_DIR, { recursive: true })
-    writeFileSync(join(APPROVED_DIR, pending.senderId), pending.chatId)
-    delete ac.pending[code]
-    saveAccess(ac, ACCESS_FILE, STATE_DIR, false)
-    console.log(`Paired ${pending.senderId}! The bot will send a confirmation message.`)
-    return
-  }
-
-  if (sub === 'deny') {
-    const code = rest[0]
-    if (!code) { console.error('Usage: claude-feishu access deny <code>'); process.exit(1) }
-    const ac = readAccess(ACCESS_FILE, () => {})
-    if (!ac.pending[code]) { console.error(`Invalid code: ${code}`); process.exit(1) }
-    delete ac.pending[code]
-    saveAccess(ac, ACCESS_FILE, STATE_DIR, false)
-    console.log(`Denied ${code}`)
-    return
-  }
 
   if (sub === 'allow') {
     const id = rest[0]
@@ -196,8 +155,8 @@ function handleAccess(a: string[]) {
 
   if (sub === 'policy') {
     const mode = rest[0]
-    if (!mode || !['pairing', 'allowlist', 'disabled'].includes(mode)) {
-      console.error('Usage: claude-feishu access policy <pairing|allowlist|disabled>')
+    if (!mode || !['allowlist', 'disabled'].includes(mode)) {
+      console.error('Usage: claude-feishu access policy <allowlist|disabled>')
       process.exit(1)
     }
     const ac = readAccess(ACCESS_FILE, () => {})

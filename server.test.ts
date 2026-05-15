@@ -7,11 +7,11 @@ import { tmpdir } from 'os'
 
 import {
   chunkText, checkMention, assertAllowedChat, resolveChatId, genConfirmCode, gate,
-  readAccess, defAccess, pruneExpired, parseMessageContent,
+  readAccess, defAccess, parseMessageContent,
   buildAttachmentInfo, formatTimestamp,
   PERMISSION_REPLY_RE, CONFIRM_CHARS,
   rotateLogIfNeeded, MAX_LOG_SIZE,
-  type Access, type PendingEntry, type GroupPolicy, type GateResult,
+  type Access, type GroupPolicy, type GateResult,
   AccessCache,
 } from './shared.ts'
 
@@ -88,39 +88,9 @@ describe('gate — DM policies', () => {
     expect(gateTest(a, 'ou_unknown', 'oc_chat', 'p2p', false).action).toBe('drop')
   })
 
-  test('unknown user in pairing mode gets code', () => {
+  test('unknown user in default mode drops', () => {
     const a = baseAccess()
-    const result = gateTest(a, 'ou_unknown', 'oc_chat', 'p2p', false)
-    expect(result.action).toBe('pair')
-    if (result.action === 'pair') {
-      expect(result.isResend).toBe(false)
-    }
-  })
-
-  test('pending user gets resend', () => {
-    const a = { ...baseAccess(), pending: { abc123: { senderId: 'ou_user', chatId: 'oc_chat', createdAt: Date.now(), expiresAt: Date.now() + 3600000, replies: 1 } } }
-    const result = gateTest(a, 'ou_user', 'oc_chat', 'p2p', false)
-    expect(result.action).toBe('pair')
-    if (result.action === 'pair') {
-      expect(result.isResend).toBe(true)
-      expect(result.code).toBe('abc123')
-    }
-  })
-
-  test('pending user with 2+ replies gets dropped', () => {
-    const a = { ...baseAccess(), pending: { abc123: { senderId: 'ou_user', chatId: 'oc_chat', createdAt: Date.now(), expiresAt: Date.now() + 3600000, replies: 2 } } }
-    expect(gateTest(a, 'ou_user', 'oc_chat', 'p2p', false).action).toBe('drop')
-  })
-
-  test('too many pending drops new users', () => {
-    const now = Date.now()
-    const pending: Record<string, PendingEntry> = {
-      a: { senderId: 'ou_1', chatId: 'oc_1', createdAt: now, expiresAt: now + 3600000, replies: 1 },
-      b: { senderId: 'ou_2', chatId: 'oc_2', createdAt: now, expiresAt: now + 3600000, replies: 1 },
-      c: { senderId: 'ou_3', chatId: 'oc_3', createdAt: now, expiresAt: now + 3600000, replies: 1 },
-    }
-    const a = { ...baseAccess(), pending }
-    expect(gateTest(a, 'ou_new', 'oc_new', 'p2p', false).action).toBe('drop')
+    expect(gateTest(a, 'ou_unknown', 'oc_chat', 'p2p', false).action).toBe('drop')
   })
 })
 
@@ -357,22 +327,6 @@ describe('formatTimestamp', () => {
   })
 })
 
-// ---------- pruneExpired ----------
-
-describe('pruneExpired', () => {
-  test('removes expired entries', () => {
-    const a = { ...baseAccess(), pending: { abc: { senderId: 'ou_1', chatId: 'oc_1', createdAt: Date.now() - 7200000, expiresAt: Date.now() - 3600000, replies: 1 } } }
-    expect(pruneExpired(a)).toBe(true)
-    expect(Object.keys(a.pending)).toHaveLength(0)
-  })
-
-  test('keeps valid entries', () => {
-    const a = { ...baseAccess(), pending: { abc: { senderId: 'ou_1', chatId: 'oc_1', createdAt: Date.now(), expiresAt: Date.now() + 3600000, replies: 1 } } }
-    expect(pruneExpired(a)).toBe(false)
-    expect(Object.keys(a.pending)).toHaveLength(1)
-  })
-})
-
 // ---------- router: resolveWorkdir ----------
 
 type RouterAccess = {
@@ -426,7 +380,7 @@ describe('AccessCache', () => {
     const cache = new AccessCache(1000)
     const noop = () => {}
     const a = cache.get('/nonexistent/path/access.json', noop)
-    expect(a.dmPolicy).toBe('pairing')
+    expect(a.dmPolicy).toBe('allowlist')
     expect(a.allowFrom).toEqual([])
   })
 
