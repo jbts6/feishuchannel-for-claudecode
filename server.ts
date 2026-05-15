@@ -209,6 +209,10 @@ const mcp = new Server(
 
         Applies to: answers, progress updates, clarifications, errors — ALL responses.
 
+        ## Silence After Tool Calls
+
+        After calling reply, edit_message, or send_confirm_card, do NOT generate any follow-up text like "Message sent" or "Looks like the message was sent successfully." These tools already confirm delivery. Only speak again when you have substantive new content for the user.
+
         ## Resolution
 
         chat_id auto-resolved: match workdir against access.json groups → fallback to FEISHU_APP_CHAT_ID from .env.
