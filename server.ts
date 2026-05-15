@@ -34,10 +34,15 @@ const dbg = makeDebugger(join(STATE_DIR, 'debug.log'))
 
 // ── Process tree detection ───────────────────────────────────────────────────
 
+function isValidPid(n: number): boolean {
+  return Number.isInteger(n) && n > 0
+}
+
 function findChannelAncestorPid(): number {
   try {
     if (IS_WIN32) {
       let pid = process.ppid
+      if (!isValidPid(pid)) return 0
       for (let depth = 0; depth < 5; depth++) {
         try {
           const out = execSync(`wmic process where processid=${pid} get parentprocessid,commandline /value`, { encoding: 'utf8' })
@@ -78,6 +83,7 @@ function findChannelAncestorPid(): number {
 }
 
 function getProcessCwd(pid: number): string | undefined {
+  if (!isValidPid(pid)) return undefined
   if (IS_WIN32) {
     if (process.env.CLAUDE_PROJECT_DIR) return process.env.CLAUDE_PROJECT_DIR
     return undefined
@@ -183,8 +189,10 @@ const gateFn = (senderId: string, chatId: string, chatType: string, mentioned: b
 // ── Approval polling ─────────────────────────────────────────────────────────
 
 function checkApprovals() {
+  if (!existsSync(APPROVED_DIR)) return
   let files: string[]
   try { files = readdirSync(APPROVED_DIR) } catch (e) { dbg(`checkApprovals readdir failed: ${e}`); return }
+  if (!files.length) return
   for (const openId of files) {
     const file = join(APPROVED_DIR, openId)
     let chatId: string
@@ -238,8 +246,16 @@ const mcp = new Server(
   },
 )
 
-const pendingPerms = new Map<string, { tool_name: string; description: string; input_preview: string }>()
-const pendingConfirms = new Map<string, { chatId: string; senderId: string; title: string; content: string }>()
+const pendingPerms = new Map<string, { tool_name: string; description: string; input_preview: string; createdAt: number }>()
+const pendingConfirms = new Map<string, { chatId: string; senderId: string; title: string; content: string; createdAt: number }>()
+const PENDING_TTL_MS = 3600_000
+
+function prunePending() {
+  const now = Date.now()
+  for (const [k, v] of pendingPerms) { if (now - v.createdAt > PENDING_TTL_MS) pendingPerms.delete(k) }
+  for (const [k, v] of pendingConfirms) { if (now - v.createdAt > PENDING_TTL_MS) pendingConfirms.delete(k) }
+}
+setInterval(prunePending, 60_000).unref()
 
 // ── Card builders ────────────────────────────────────────────────────────────
 
@@ -373,7 +389,7 @@ mcp.setNotificationHandler(
   async ({ params }) => {
     dbg(`permission_request received: tool=${params.tool_name} request_id=${params.request_id}`)
     const { request_id, tool_name, description } = params
-    pendingPerms.set(request_id, params)
+    pendingPerms.set(request_id, { ...params, createdAt: Date.now() })
     const card = buildPermCard(tool_name, description, request_id)
     const a = loadAccess()
     const chatForUser = Object.fromEntries(Object.entries(a.p2pChats).map(([cid, oid]) => [oid, cid]))
@@ -445,7 +461,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (!confirmChatId) throw new Error('chat_id required — no inbound message and no fallback chat configured')
         assertAllowedChat(confirmChatId, confirmAccess)
         const code = genConfirmCode()
-        pendingConfirms.set(code, { chatId: confirmChatId, senderId: '', title, content })
+        pendingConfirms.set(code, { chatId: confirmChatId, senderId: '', title, content, createdAt: Date.now() })
         const card = buildConfirmCard(title, content, code)
         const r = await apiClient.im.message.create({ params: { receive_id_type: 'chat_id' }, data: { receive_id: confirmChatId, msg_type: 'interactive', content: card } })
         const msgId = (r as any)?.message_id ?? (r as any)?.data?.message_id ?? ''
@@ -460,8 +476,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 
 // ── Card action handler ──────────────────────────────────────────────────────
 
+function redact(s: string): string {
+  return s.replace(/ou_[a-zA-Z0-9]+/g, 'ou_***').replace(/oc_[a-zA-Z0-9]+/g, 'oc_***').replace(/om_[a-zA-Z0-9]+/g, 'om_***')
+}
+
 async function handleCardAction(data: any): Promise<Record<string, unknown>> {
-  dbg(`handleCardAction: ${JSON.stringify(data).slice(0, 500)}`)
+  dbg(`handleCardAction: ${redact(JSON.stringify(data).slice(0, 500))}`)
   const value = data?.action?.value ?? {}
   const code = value.code as string | undefined
   const action = value.action as string | undefined
@@ -544,7 +564,7 @@ async function handleCardAction(data: any): Promise<Record<string, unknown>> {
 async function handleInbound(data: any) {
   const ev = data.event ?? data
   const sender = ev.sender, message = ev.message
-  dbg(`handleInbound: sender=${JSON.stringify(sender?.sender_id)}, chat_id=${message?.chat_id}, chat_type=${message?.chat_type}, msg_type=${message?.message_type}`)
+  dbg(`handleInbound: sender=${redact(JSON.stringify(sender?.sender_id))}, chat_id=${redact(message?.chat_id ?? '')}, chat_type=${message?.chat_type}, msg_type=${message?.message_type}`)
   if (!sender || !message) { dbg('drop: missing sender or message'); return }
   const senderId: string = sender.sender_id?.open_id ?? ''
   const chatId: string = message.chat_id ?? ''

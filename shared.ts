@@ -7,7 +7,7 @@ import * as lark from '@larksuiteoapi/node-sdk'
 import { randomBytes } from 'crypto'
 import {
   readFileSync, writeFileSync, appendFileSync, mkdirSync, renameSync, chmodSync, realpathSync,
-  statSync, existsSync, rmSync,
+  statSync, existsSync, rmSync, openSync, closeSync, writeSync,
 } from 'fs'
 import { homedir } from 'os'
 import { join, sep } from 'path'
@@ -22,7 +22,7 @@ export const MAX_LOG_SIZE = 5 * 1024 * 1024
 export const MAX_LOG_FILES = 3
 export const LOG_ROTATE_CHECK_INTERVAL = 100
 
-export const PERMISSION_REPLY_RE = /^\s*(yy|yesyes|y|yes|n|no)\s+([a-km-z]{5})\s*$/i
+export const PERMISSION_REPLY_RE = /^\s*(yy|yesyes|y|yes|n|no)\s+([a-km-z]{8})\s*$/i
 export const CONFIRM_CHARS = 'abcdefghijkmnopqrstuvwxyz'
 
 // ── Platform helpers ───────────────────────────────────────────────────────────
@@ -83,15 +83,40 @@ export function rotateLogIfNeeded(logFile: string) {
 
 export function makeDebugger(logFile: string, prefix = '') {
   let writeCount = 0
+  let buf = ''
+  let fd: number | null = null
+  const FLUSH_INTERVAL_MS = 1000
+  const FLUSH_THRESHOLD = 4096
+
+  function flush() {
+    if (!buf) return
+    const data = buf
+    buf = ''
+    try {
+      if (fd === null) fd = openSync(logFile, 'a')
+      writeSync(fd, data)
+    } catch (e) {
+      fd = null
+      try { appendFileSync(logFile, data) } catch { /* give up */ }
+    }
+  }
+
   rotateLogIfNeeded(logFile)
+
+  const timer = setInterval(flush, FLUSH_INTERVAL_MS)
+  timer.unref()
+
   return (msg: string) => {
     const line = `${new Date().toISOString()} ${prefix}${msg}\n`
     process.stderr.write(line)
-    try {
-      appendFileSync(logFile, line)
-      writeCount++
-      if (writeCount % LOG_ROTATE_CHECK_INTERVAL === 0) rotateLogIfNeeded(logFile)
-    } catch (e) { process.stderr.write(`debug log write failed: ${e}\n`) }
+    buf += line
+    writeCount++
+    if (buf.length >= FLUSH_THRESHOLD) flush()
+    if (writeCount % LOG_ROTATE_CHECK_INTERVAL === 0) {
+      flush()
+      if (fd !== null) { closeSync(fd); fd = null }
+      rotateLogIfNeeded(logFile)
+    }
   }
 }
 
@@ -188,16 +213,23 @@ export function resolveChatId(workdir: string | undefined, access: Access): stri
   return process.env.FEISHU_APP_CHAT_ID || undefined
 }
 
+const normalizePathCache = new Map<string, string>()
+
 function normalizePath(p: string): string {
-  try { p = realpathSync(p) } catch {}
-  if (p.length > 3 && (p.endsWith('/') || p.endsWith('\\'))) p = p.slice(0, -1)
-  return process.platform === 'win32' ? p.toLowerCase() : p
+  const cached = normalizePathCache.get(p)
+  if (cached !== undefined) return cached
+  let result = p
+  try { result = realpathSync(p) } catch {}
+  if (result.length > 3 && (result.endsWith('/') || result.endsWith('\\'))) result = result.slice(0, -1)
+  result = process.platform === 'win32' ? result.toLowerCase() : result
+  normalizePathCache.set(p, result)
+  return result
 }
 
 // ── Confirm code generation ──────────────────────────────────────────────────
 
 export function genConfirmCode(): string {
-  const bytes = randomBytes(5)
+  const bytes = randomBytes(8)
   return Array.from(bytes).map(b => CONFIRM_CHARS[b % CONFIRM_CHARS.length]).join('')
 }
 
@@ -261,13 +293,18 @@ export function chunkText(text: string, limit: number): string[] {
 
 // ── Mention detection ────────────────────────────────────────────────────────
 
+const MAX_PATTERN_LENGTH = 128
+
 export function checkMention(mentions: any[], text: string, botOpenId: string | null, extra?: string[]): boolean {
   for (const m of mentions) {
     if (m.mentioned_type === 'bot') return true
     if (botOpenId && m.id?.open_id === botOpenId) return true
   }
   for (const p of extra ?? []) {
-    try { if (new RegExp(p, 'i').test(text)) return true } catch (e) { process.stderr.write(`invalid mention pattern "${p}": ${e}\n`) }
+    try {
+      if (p.length > MAX_PATTERN_LENGTH) { process.stderr.write(`mention pattern too long (${p.length} chars), skipping\n`); continue }
+      if (new RegExp(p, 'i').test(text)) return true
+    } catch (e) { process.stderr.write(`invalid mention pattern "${p}": ${e}\n`) }
   }
   return false
 }

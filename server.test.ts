@@ -183,23 +183,23 @@ describe('checkMention', () => {
 // ---------- PERMISSION_REPLY_RE ----------
 
 describe('PERMISSION_REPLY_RE', () => {
-  test('y + 5-char code matches', () => {
-    const m = PERMISSION_REPLY_RE.exec('y abcde')
+  test('y + 8-char code matches', () => {
+    const m = PERMISSION_REPLY_RE.exec('y abcdefgh')
     expect(m).not.toBeNull()
     expect(m![1]).toBe('y')
-    expect(m![2]).toBe('abcde')
+    expect(m![2]).toBe('abcdefgh')
   })
 
   test('YES + code matches', () => {
-    expect(PERMISSION_REPLY_RE.test('YES abcde')).toBe(true)
+    expect(PERMISSION_REPLY_RE.test('YES abcdefgh')).toBe(true)
   })
 
   test('no + code matches', () => {
-    expect(PERMISSION_REPLY_RE.test('no abcde')).toBe(true)
+    expect(PERMISSION_REPLY_RE.test('no abcdefgh')).toBe(true)
   })
 
   test('rejects code with l', () => {
-    expect(PERMISSION_REPLY_RE.test('y abcle')).toBe(false)
+    expect(PERMISSION_REPLY_RE.test('y abcdefl1')).toBe(false)
   })
 
   test('rejects short code', () => {
@@ -207,26 +207,26 @@ describe('PERMISSION_REPLY_RE', () => {
   })
 
   test('rejects extra text', () => {
-    expect(PERMISSION_REPLY_RE.test('y abcde extra')).toBe(false)
+    expect(PERMISSION_REPLY_RE.test('y abcdefgh extra')).toBe(false)
   })
 
-  test('yy + 5-char code matches as always-allow', () => {
-    const m = PERMISSION_REPLY_RE.exec('yy abcde')
+  test('yy + 8-char code matches as always-allow', () => {
+    const m = PERMISSION_REPLY_RE.exec('yy abcdefgh')
     expect(m).not.toBeNull()
     expect(m![1]).toBe('yy')
-    expect(m![2]).toBe('abcde')
+    expect(m![2]).toBe('abcdefgh')
   })
 
   test('YESYES + code matches as always-allow', () => {
-    expect(PERMISSION_REPLY_RE.test('YESYES abcde')).toBe(true)
+    expect(PERMISSION_REPLY_RE.test('YESYES abcdefgh')).toBe(true)
   })
 })
 
 // ---------- genConfirmCode ----------
 
 describe('genConfirmCode', () => {
-  test('generates 5-char code', () => {
-    expect(genConfirmCode().length).toBe(5)
+  test('generates 8-char code', () => {
+    expect(genConfirmCode().length).toBe(8)
   })
 
   test('code never contains l', () => {

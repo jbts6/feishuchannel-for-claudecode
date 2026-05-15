@@ -3,7 +3,7 @@
  * CLI for Feishu channel management.
  * Usage: bun bin/cli.ts auth|access <subcommand> [args]
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import {
@@ -23,6 +23,10 @@ function usage() {
 }
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
 
 function handleAuth(a: string[]) {
   if (a.length === 0) {
@@ -58,11 +62,12 @@ function handleAuth(a: string[]) {
     const val = a[2]
     if (!key || !val) { console.error('Usage: claude-feishu auth key <key> <value>'); process.exit(1) }
     let content = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, 'utf8') : ''
-    const re = new RegExp(`^${key}=.*$`, 'm')
+    const re = new RegExp(`^${escapeRegExp(key)}=.*$`, 'm')
     if (re.test(content)) content = content.replace(re, `${key}=${val}`)
     else content += `${key}=${val}\n`
     mkdirSync(STATE_DIR, { recursive: true })
     writeFileSync(ENV_FILE, content)
+    try { chmodSync(ENV_FILE, 0o600) } catch {}
     console.log(`Set ${key}`)
     return
   }
@@ -75,17 +80,20 @@ function handleAuth(a: string[]) {
     else content += `FEISHU_APP_CHAT_ID=${chatId}\n`
     mkdirSync(STATE_DIR, { recursive: true })
     writeFileSync(ENV_FILE, content)
+    try { chmodSync(ENV_FILE, 0o600) } catch {}
     console.log(`Set FEISHU_APP_CHAT_ID=${chatId}`)
     return
   }
   if (a[0] === 'clear') {
     writeFileSync(ENV_FILE, '')
+    try { chmodSync(ENV_FILE, 0o600) } catch {}
     console.log('Credentials cleared')
     return
   }
   if (a.length >= 2) {
     mkdirSync(STATE_DIR, { recursive: true })
     writeFileSync(ENV_FILE, `FEISHU_APP_ID=${a[0]}\nFEISHU_APP_SECRET=${a[1]}\n`)
+    try { chmodSync(ENV_FILE, 0o600) } catch {}
     if (a[2]) writeFileSync(ENV_FILE, `\nFEISHU_ENCRYPT_KEY=${a[2]}\n`, { flag: 'a' })
     console.log('Credentials saved. Restart Claude Code or run /reload-plugins.')
     return

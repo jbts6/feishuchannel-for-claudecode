@@ -26,6 +26,7 @@ import {
   checkMention,
   fetchBotOpenId, fetchParentQuote,
   parseMessageContent, buildAttachmentInfo, formatTimestamp,
+  AccessCache,
 } from './shared.ts'
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -42,8 +43,10 @@ const { appId: APP_ID, appSecret: APP_SECRET, encryptKey: ENCRYPT_KEY } = requir
 
 // ── Access control ───────────────────────────────────────────────────────────
 
+const routerAccessCache = new AccessCache(2000)
+
 function loadRouterAccess(): Access {
-  return readAccess(ACCESS_FILE, dbg)
+  return routerAccessCache.get(ACCESS_FILE, dbg)
 }
 
 // ── Feishu API ──────────────────────────────────────────────────────────────
@@ -150,6 +153,7 @@ function resolveWorkdir(chatId: string, chatType: string, access: Access): strin
 
 function saveRouterAccess(a: Access) {
   saveAccess(a, ACCESS_FILE, STATE_DIR, false)
+  routerAccessCache.invalidate()
 }
 
 async function handleInbound(data: any) {
