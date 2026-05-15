@@ -1,10 +1,16 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import {
+  writeFileSync, mkdirSync, rmSync, statSync, existsSync,
+} from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 
 import {
   chunkText, checkMention, assertAllowedChat, resolveChatId, genConfirmCode, gate,
   readAccess, defAccess, pruneExpired, parseMessageContent,
   buildAttachmentInfo, formatTimestamp,
   PERMISSION_REPLY_RE, CONFIRM_CHARS,
+  rotateLogIfNeeded, MAX_LOG_SIZE,
   type Access, type PendingEntry, type GroupPolicy, type GateResult,
   AccessCache,
 } from './shared.ts'
@@ -483,5 +489,59 @@ describe('resolveChatId', () => {
     expect(resolveChatId('/path/to/project-a', access)).toBe('oc_groupA')
     if (orig !== undefined) process.env.FEISHU_APP_CHAT_ID = orig
     else delete process.env.FEISHU_APP_CHAT_ID
+  })
+})
+
+// ---------- rotateLogIfNeeded ----------
+
+describe('rotateLogIfNeeded', () => {
+  const testDir = join(tmpdir(), `feishu-test-rotate-${Date.now()}`)
+  const logFile = join(testDir, 'test.log')
+
+  beforeEach(() => {
+    mkdirSync(testDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    try { rmSync(testDir, { recursive: true, force: true }) } catch {}
+  })
+
+  test('does not rotate when file is under size limit', () => {
+    writeFileSync(logFile, 'small content')
+    rotateLogIfNeeded(logFile)
+    expect(existsSync(logFile)).toBe(true)
+    expect(existsSync(`${logFile}.1`)).toBe(false)
+  })
+
+  test('rotates when file exceeds size limit', () => {
+    const big = 'x'.repeat(MAX_LOG_SIZE + 1)
+    writeFileSync(logFile, big)
+    rotateLogIfNeeded(logFile)
+    expect(existsSync(`${logFile}.1`)).toBe(true)
+    expect(existsSync(logFile)).toBe(false)
+  })
+
+  test('shifts existing rotated files', () => {
+    writeFileSync(`${logFile}.1`, 'old-1')
+    const big = 'x'.repeat(MAX_LOG_SIZE + 1)
+    writeFileSync(logFile, big)
+    rotateLogIfNeeded(logFile)
+    expect(existsSync(`${logFile}.2`)).toBe(true)
+    expect(existsSync(`${logFile}.1`)).toBe(true)
+  })
+
+  test('deletes oldest file when at max count', () => {
+    writeFileSync(`${logFile}.1`, 'old-1')
+    writeFileSync(`${logFile}.2`, 'old-2')
+    const big = 'x'.repeat(MAX_LOG_SIZE + 1)
+    writeFileSync(logFile, big)
+    rotateLogIfNeeded(logFile)
+    expect(existsSync(`${logFile}.2`)).toBe(true)
+    expect(existsSync(`${logFile}.3`)).toBe(false)
+  })
+
+  test('handles missing log file gracefully', () => {
+    const missingFile = join(testDir, 'nonexistent.log')
+    expect(() => rotateLogIfNeeded(missingFile)).not.toThrow()
   })
 })

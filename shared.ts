@@ -7,6 +7,7 @@ import * as lark from '@larksuiteoapi/node-sdk'
 import { randomBytes } from 'crypto'
 import {
   readFileSync, writeFileSync, appendFileSync, mkdirSync, renameSync, chmodSync, realpathSync,
+  statSync, existsSync, rmSync,
 } from 'fs'
 import { homedir } from 'os'
 import { join, sep } from 'path'
@@ -17,6 +18,9 @@ export const STATE_DIR = process.env.FEISHU_STATE_DIR ?? join(homedir(), '.claud
 export const ACCESS_FILE = join(STATE_DIR, 'access.json')
 export const ENV_FILE = join(STATE_DIR, '.env')
 export const MAX_CHUNK = 4096
+export const MAX_LOG_SIZE = 5 * 1024 * 1024
+export const MAX_LOG_FILES = 3
+export const LOG_ROTATE_CHECK_INTERVAL = 100
 
 export const PERMISSION_REPLY_RE = /^\s*(yy|yesyes|y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 export const CONFIRM_CHARS = 'abcdefghijkmnopqrstuvwxyz'
@@ -61,11 +65,33 @@ export type Access = {
 
 // ── Debug logging ────────────────────────────────────────────────────────────
 
+export function rotateLogIfNeeded(logFile: string) {
+  try {
+    const size = statSync(logFile).size
+    if (size < MAX_LOG_SIZE) return
+    for (let i = MAX_LOG_FILES - 2; i >= 1; i--) {
+      const oldPath = `${logFile}.${i}`
+      try {
+        if (!existsSync(oldPath)) continue
+        if (i === MAX_LOG_FILES - 1) rmSync(oldPath, { force: true })
+        else renameSync(oldPath, `${logFile}.${i + 1}`)
+      } catch { /* ignore rotation errors for individual files */ }
+    }
+    renameSync(logFile, `${logFile}.1`)
+  } catch { /* file doesn't exist or inaccessible, skip rotation */ }
+}
+
 export function makeDebugger(logFile: string, prefix = '') {
+  let writeCount = 0
+  rotateLogIfNeeded(logFile)
   return (msg: string) => {
     const line = `${new Date().toISOString()} ${prefix}${msg}\n`
     process.stderr.write(line)
-    try { appendFileSync(logFile, line) } catch (e) { process.stderr.write(`debug log write failed: ${e}\n`) }
+    try {
+      appendFileSync(logFile, line)
+      writeCount++
+      if (writeCount % LOG_ROTATE_CHECK_INTERVAL === 0) rotateLogIfNeeded(logFile)
+    } catch (e) { process.stderr.write(`debug log write failed: ${e}\n`) }
   }
 }
 
