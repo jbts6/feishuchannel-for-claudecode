@@ -240,7 +240,7 @@ const mcp = new Server(
 
         ## High-Risk Actions
 
-        Before irreversible actions, call send_confirm_card. Wait for "CONFIRMED <code>" to proceed or "CANCELLED <code>" to abort.
+        Before irreversible actions, call send_confirm_card. Wait for "CONFIRMED <code>" to proceed, "CONFIRMED_ALWAYS <code>" to proceed and auto-approve future similar actions, or "CANCELLED <code>" to abort.
 
         ## Self-Check
 
@@ -278,7 +278,7 @@ function buildPermCard(tool_name: string, description: string, request_id: strin
               width: 'auto',
               elements: [{
                 tag: 'button',
-                text: { content: '✅ 允许', tag: 'plain_text' },
+                text: { content: '✅', tag: 'plain_text' },
                 type: 'primary',
                 behaviors: [{ type: 'callback', value: { action: 'perm_allow', code: request_id } }],
               }],
@@ -288,7 +288,17 @@ function buildPermCard(tool_name: string, description: string, request_id: strin
               width: 'auto',
               elements: [{
                 tag: 'button',
-                text: { content: '❌ 拒绝', tag: 'plain_text' },
+                text: { content: '✅✅', tag: 'plain_text' },
+                type: 'primary',
+                behaviors: [{ type: 'callback', value: { action: 'perm_allow_always', code: request_id } }],
+              }],
+            },
+            {
+              tag: 'column',
+              width: 'auto',
+              elements: [{
+                tag: 'button',
+                text: { content: '❌', tag: 'plain_text' },
                 type: 'danger',
                 behaviors: [{ type: 'callback', value: { action: 'perm_deny', code: request_id } }],
               }],
@@ -298,7 +308,7 @@ function buildPermCard(tool_name: string, description: string, request_id: strin
         { tag: 'hr' },
         {
           tag: 'markdown',
-          content: `或回复 \`y ${request_id}\` 允许，\`n ${request_id}\` 拒绝`,
+          content: `回复 \`y ${request_id}\` 允许，\`yy ${request_id}\` 一直允许，\`n ${request_id}\` 拒绝`,
         },
       ],
     },
@@ -328,7 +338,7 @@ function buildConfirmCard(title: string, content: string, code: string): string 
               width: 'auto',
               elements: [{
                 tag: 'button',
-                text: { content: '✅ 确认', tag: 'plain_text' },
+                text: { content: '✅', tag: 'plain_text' },
                 type: 'primary',
                 behaviors: [{ type: 'callback', value: { action: 'confirm', code } }],
               }],
@@ -338,7 +348,17 @@ function buildConfirmCard(title: string, content: string, code: string): string 
               width: 'auto',
               elements: [{
                 tag: 'button',
-                text: { content: '❌ 取消', tag: 'plain_text' },
+                text: { content: '✅✅', tag: 'plain_text' },
+                type: 'primary',
+                behaviors: [{ type: 'callback', value: { action: 'confirm_always', code } }],
+              }],
+            },
+            {
+              tag: 'column',
+              width: 'auto',
+              elements: [{
+                tag: 'button',
+                text: { content: '❌', tag: 'plain_text' },
                 type: 'danger',
                 behaviors: [{ type: 'callback', value: { action: 'cancel', code } }],
               }],
@@ -348,7 +368,7 @@ function buildConfirmCard(title: string, content: string, code: string): string 
         { tag: 'hr' },
         {
           tag: 'markdown',
-          content: `或回复 \`y ${code}\` 确认，\`n ${code}\` 取消`,
+          content: `回复 \`y ${code}\` 允许，\`yy ${code}\` 一直允许，\`n ${code}\` 拒绝`,
         },
       ],
     },
@@ -388,7 +408,7 @@ mcp.setNotificationHandler(
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [
   { name: 'reply', description: 'Send a message to a Feishu chat. Pass chat_id from the inbound message. If omitted, resolves from workdir or FEISHU_APP_CHAT_ID. Optionally pass reply_to (message_id) to quote-reply.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string', description: 'Target chat ID. Auto-resolved if omitted.' }, text: { type: 'string' }, reply_to: { type: 'string', description: 'Message ID to quote-reply.' } }, required: ['text'] } },
   { name: 'edit_message', description: "Edit a text message the bot sent. Edits don't push notifications — send a new reply when a long task completes.", inputSchema: { type: 'object', properties: { chat_id: { type: 'string', description: 'Target chat ID. Auto-resolved if omitted.' }, message_id: { type: 'string' }, text: { type: 'string' } }, required: ['message_id', 'text'] } },
-  { name: 'send_confirm_card', description: 'Send an interactive card with ✅ Confirm and ❌ Cancel buttons to ask the user before taking a risky or irreversible action. When the user responds, a "CONFIRMED <code>" or "CANCELLED <code>" message arrives in this session. Wait for it before proceeding.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string', description: 'Target chat ID. Auto-resolved if omitted.' }, content: { type: 'string', description: 'Action description shown in the card (supports lark_md markdown).' }, title: { type: 'string', description: 'Card title. Default: "⚡ 操作确认"' } }, required: ['content'] } },
+  { name: 'send_confirm_card', description: 'Send an interactive card with ✅ Allow, ✅✅ Always Allow, and ❌ Deny buttons before a risky or irreversible action. When the user responds, a "CONFIRMED <code>", "CONFIRMED_ALWAYS <code>", or "CANCELLED <code>" message arrives. Wait for it before proceeding.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string', description: 'Target chat ID. Auto-resolved if omitted.' }, content: { type: 'string', description: 'Action description shown in the card (supports lark_md markdown).' }, title: { type: 'string', description: 'Card title. Default: "⚡ 操作确认"' } }, required: ['content'] } },
 ] }))
 
 // ── Tool handler ─────────────────────────────────────────────────────────────
@@ -457,12 +477,12 @@ async function handleCardAction(data: any): Promise<Record<string, unknown>> {
   const action = value.action as string | undefined
   if (!code || !action) return {}
 
-  if (action === 'perm_allow' || action === 'perm_deny') {
-    const behavior = action === 'perm_deny' ? 'deny' : 'allow'
+  if (action === 'perm_allow' || action === 'perm_allow_always' || action === 'perm_deny') {
+    const behavior = action === 'perm_deny' ? 'deny' : action === 'perm_allow_always' ? 'allow-always' : 'allow'
     void mcp.notification({ method: 'notifications/claude/channel/permission', params: { request_id: code, behavior } })
     const perm = pendingPerms.get(code)
     pendingPerms.delete(code)
-    const statusText = behavior === 'allow' ? '✅ 已允许' : '❌ 已拒绝'
+    const statusText = behavior === 'deny' ? '❌ 已拒绝' : behavior === 'allow-always' ? '✅✅ 已一直允许' : '✅ 已允许'
     return {
       toast: { type: behavior === 'deny' ? 'info' : 'success', content: statusText },
       card: {
@@ -489,11 +509,12 @@ async function handleCardAction(data: any): Promise<Record<string, unknown>> {
   const pending = pendingConfirms.get(code)
   if (!pending) return {}
   pendingConfirms.delete(code)
-  const isConfirm = action === 'confirm'
+  const isConfirm = action === 'confirm' || action === 'confirm_always'
+  const isAlways = action === 'confirm_always'
   void mcp.notification({
     method: 'notifications/claude/channel',
     params: {
-      content: isConfirm ? `CONFIRMED ${code}` : `CANCELLED ${code}`,
+      content: isAlways ? `CONFIRMED_ALWAYS ${code}` : isConfirm ? `CONFIRMED ${code}` : `CANCELLED ${code}`,
       meta: {
         chat_id: pending.chatId,
         message_id: `card-${Date.now()}`,
@@ -504,7 +525,7 @@ async function handleCardAction(data: any): Promise<Record<string, unknown>> {
       },
     },
   })
-  const statusText = isConfirm ? '✅ 已确认' : '❌ 已取消'
+  const statusText = !isConfirm ? '❌ 已拒绝' : isAlways ? '✅✅ 已一直允许' : '✅ 已确认'
   return {
     toast: { type: isConfirm ? 'success' : 'info', content: statusText },
     card: {
@@ -565,14 +586,17 @@ async function handleInbound(data: any) {
   const pm = PERMISSION_REPLY_RE.exec(text)
   if (pm) {
     const code = pm[2]!.toLowerCase()
-    const behavior = pm[1]!.toLowerCase().startsWith('y') ? 'allow' : 'deny'
+    const raw = pm[1]!.toLowerCase()
+    const isAlways = raw === 'yy' || raw === 'yesyes'
+    const isAllow = raw.startsWith('y')
+    const behavior = isAllow ? (isAlways ? 'allow-always' : 'allow') : 'deny'
     const confirm = pendingConfirms.get(code)
     if (confirm) {
       pendingConfirms.delete(code)
       void mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          content: behavior === 'allow' ? `CONFIRMED ${code}` : `CANCELLED ${code}`,
+          content: isAllow ? (isAlways ? `CONFIRMED_ALWAYS ${code}` : `CONFIRMED ${code}`) : `CANCELLED ${code}`,
           meta: { chat_id: chatId, message_id: messageId, user: senderId, user_id: senderId, ts: new Date().toISOString(), chat_type: chatType },
         },
       })

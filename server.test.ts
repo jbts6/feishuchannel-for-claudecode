@@ -203,6 +203,17 @@ describe('PERMISSION_REPLY_RE', () => {
   test('rejects extra text', () => {
     expect(PERMISSION_REPLY_RE.test('y abcde extra')).toBe(false)
   })
+
+  test('yy + 5-char code matches as always-allow', () => {
+    const m = PERMISSION_REPLY_RE.exec('yy abcde')
+    expect(m).not.toBeNull()
+    expect(m![1]).toBe('yy')
+    expect(m![2]).toBe('abcde')
+  })
+
+  test('YESYES + code matches as always-allow', () => {
+    expect(PERMISSION_REPLY_RE.test('YESYES abcde')).toBe(true)
+  })
 })
 
 // ---------- genConfirmCode ----------

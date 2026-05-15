@@ -18,7 +18,7 @@ export const ACCESS_FILE = join(STATE_DIR, 'access.json')
 export const ENV_FILE = join(STATE_DIR, '.env')
 export const MAX_CHUNK = 4096
 
-export const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
+export const PERMISSION_REPLY_RE = /^\s*(yy|yesyes|y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 export const CONFIRM_CHARS = 'abcdefghijkmnopqrstuvwxyz'
 
 // ── Platform helpers ───────────────────────────────────────────────────────────

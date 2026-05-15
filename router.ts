@@ -239,13 +239,13 @@ async function handleCardAction(data: any): Promise<Record<string, unknown>> {
   const chatId = data?.open_chat_id ?? ''
   const workdir = chatId ? resolveWorkdir(chatId, 'group') ?? resolveWorkdir(chatId, 'p2p') : undefined
 
-  if (action === 'perm_allow' || action === 'perm_deny') {
-    const behavior = action === 'perm_deny' ? 'deny' : 'allow'
+  if (action === 'perm_allow' || action === 'perm_allow_always' || action === 'perm_deny') {
+    const behavior = action === 'perm_deny' ? 'deny' : action === 'perm_allow_always' ? 'allow-always' : 'allow'
     const payload = { type: 'permission_response', request_id: code, behavior }
     if (workdir) routeToWorkdir(workdir, payload)
     else for (const w of workers.values()) sendToWorker(w, payload)
 
-    const statusText = behavior === 'allow' ? '✅ 已允许' : '❌ 已拒绝'
+    const statusText = behavior === 'deny' ? '❌ 已拒绝' : behavior === 'allow-always' ? '✅✅ 已一直允许' : '✅ 已允许'
     return {
       toast: { type: behavior === 'deny' ? 'info' : 'success', content: statusText },
       card: {
@@ -259,11 +259,12 @@ async function handleCardAction(data: any): Promise<Record<string, unknown>> {
     }
   }
 
-  if (action === 'confirm' || action === 'cancel') {
-    const isConfirm = action === 'confirm'
+  if (action === 'confirm' || action === 'confirm_always' || action === 'cancel') {
+    const isConfirm = action === 'confirm' || action === 'confirm_always'
+    const isAlways = action === 'confirm_always'
     const payload = {
       type: 'confirm_response',
-      content: isConfirm ? `CONFIRMED ${code}` : `CANCELLED ${code}`,
+      content: isAlways ? `CONFIRMED_ALWAYS ${code}` : isConfirm ? `CONFIRMED ${code}` : `CANCELLED ${code}`,
       meta: {
         chat_id: chatId || 'system',
         message_id: `card-${Date.now()}`,
@@ -276,7 +277,7 @@ async function handleCardAction(data: any): Promise<Record<string, unknown>> {
     if (workdir) routeToWorkdir(workdir, payload)
     else for (const w of workers.values()) sendToWorker(w, payload)
 
-    const statusText = isConfirm ? '✅ 已确认' : '❌ 已取消'
+    const statusText = !isConfirm ? '❌ 已拒绝' : isAlways ? '✅✅ 已一直允许' : '✅ 已确认'
     return {
       toast: { type: isConfirm ? 'success' : 'info', content: statusText },
       card: {
